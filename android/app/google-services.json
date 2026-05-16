@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "45380968124",
+    "project_id": "campus-mesh-fe025",
+    "storage_bucket": "campus-mesh-fe025.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:45380968124:android:01948358c6524043febab9",
+        "android_client_info": {
+          "package_name": "com.campusmesh.campus_mesh"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAa5CTYxrAhLZaR78N7qQX5BTVR1Ui0Ukc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
