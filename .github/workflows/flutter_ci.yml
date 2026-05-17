@@ -17,11 +17,8 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.41.9'
           channel: 'stable'
-
-      - name: Disable Flutter analytics
-        run: flutter config --no-analytics
+          flutter-version-file: pubspec.yaml
 
       - name: Install dependencies
         run: flutter pub get
@@ -31,4 +28,3 @@ jobs:
 
       - name: Run tests
         run: flutter test
-# cache bust
