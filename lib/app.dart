@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'features/discovery/peer_list_screen.dart';
 
 class CampusMeshApp extends StatelessWidget {
   const CampusMeshApp({super.key});
@@ -12,9 +13,7 @@ class CampusMeshApp extends StatelessWidget {
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
       ),
-      home: const Scaffold(
-        body: Center(child: Text('CampusMesh')),
-      ),
+      home: const PeerListScreen(),
     );
   }
 }
