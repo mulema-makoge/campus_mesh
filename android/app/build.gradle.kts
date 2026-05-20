@@ -24,7 +24,7 @@ android {
     defaultConfig {
         applicationId = "com.campusmesh.campus_mesh"
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 32
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
