@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/foundation.dart';
 
 class BleService {
   final _devicesController = StreamController<List<ScanResult>>.broadcast();
@@ -35,21 +36,21 @@ Future<bool> requestPermissions() async {
     _foundDevices.clear();
 
     if (await FlutterBluePlus.isSupported == false) {
-      print('BLE not supported on this device');
+      debugPrint('BLE not supported on this device');
       return;
     }
 
     // Request permissions before scanning
     final granted = await requestPermissions();
     if (!granted) {
-      print('Permissions not granted');
+      debugPrint('Permissions not granted');
       return;
     }
 
     // Make sure location is enabled (required on Android <12)
     final locationEnabled = await Permission.location.serviceStatus.isEnabled;
     if (!locationEnabled) {
-      print('Location services are disabled');
+      debugPrint('Location services are disabled');
       return;
     }
 
