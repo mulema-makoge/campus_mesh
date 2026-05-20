@@ -1,10 +1,16 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_p2p_connection/flutter_p2p_connection.dart';
+import 'crypto_service.dart';
 
 class WifiDirectService {
   FlutterP2pHost? _host;
   FlutterP2pClient? _client;
   bool _initialized = false;
+  bool _keyExchangeDone = false;
+
+  final _crypto = CryptoService();
+  bool _cryptoReady = false;
 
   StreamSubscription<String>? _messageSubscription;
 
@@ -20,6 +26,7 @@ class WifiDirectService {
 
   bool _isHost = false;
   bool get isHost => _isHost;
+  bool get cryptoReady => _cryptoReady;
 
   static Future<bool> isBluetoothOn() async {
     final host = FlutterP2pHost();
@@ -37,11 +44,9 @@ class WifiDirectService {
       await _host!.initialize();
       _initialized = true;
 
-      // Request permissions ONCE — don't loop
       await _host!.askP2pPermissions();
       await _host!.askBluetoothPermissions();
 
-      // Enable services
       if (!await _host!.checkWifiEnabled()) {
         await _host!.enableWifiServices();
         await Future.delayed(const Duration(seconds: 1));
@@ -55,25 +60,33 @@ class WifiDirectService {
         await Future.delayed(const Duration(seconds: 1));
       }
 
-      // Listen for messages
-      _messageSubscription = _host!.streamReceivedTexts().listen((msg) {
-        if (!_messageController.isClosed) _messageController.add(msg);
+      await _crypto.generateKeyPair();
+      final ourPublicKey = await _crypto.getPublicKeyBase64();
+
+      _messageSubscription =
+          _host!.streamReceivedTexts().listen((msg) async {
+        await _handleIncomingMessage(msg, ourPublicKey);
       });
 
-      // Listen for connection state
       _host!.streamHotspotState().listen((state) {
         if (!_connectionController.isClosed) {
           _connectionController.add(state.isActive);
         }
       });
 
-      _host!.streamClientList().listen((clients) {
+      _host!.streamClientList().listen((clients) async {
         if (clients.isNotEmpty && !_connectionController.isClosed) {
           _connectionController.add(true);
+          // Send public key only once
+          if (!_keyExchangeDone) {
+            _keyExchangeDone = true;
+            await Future.delayed(const Duration(milliseconds: 500));
+            await _host!.broadcastText('PK:$ourPublicKey');
+            debugPrint('Host: Sent public key to client');
+          }
         }
       });
 
-      // Try to create group — if it fails it's a permission issue
       await _host!.createGroup();
       return null;
     } catch (e) {
@@ -89,11 +102,9 @@ class WifiDirectService {
       await _client!.initialize();
       _initialized = true;
 
-      // Request permissions ONCE — don't loop
       await _client!.askP2pPermissions();
       await _client!.askBluetoothPermissions();
 
-      // Enable services
       if (!await _client!.checkWifiEnabled()) {
         await _client!.enableWifiServices();
         await Future.delayed(const Duration(seconds: 1));
@@ -107,19 +118,20 @@ class WifiDirectService {
         await Future.delayed(const Duration(seconds: 1));
       }
 
-      // Listen for messages
-      _messageSubscription = _client!.streamReceivedTexts().listen((msg) {
-        if (!_messageController.isClosed) _messageController.add(msg);
+      await _crypto.generateKeyPair();
+      final ourPublicKey = await _crypto.getPublicKeyBase64();
+
+      _messageSubscription =
+          _client!.streamReceivedTexts().listen((msg) async {
+        await _handleIncomingMessage(msg, ourPublicKey);
       });
 
-      // Listen for connection state
       _client!.streamHotspotState().listen((state) {
         if (!_connectionController.isClosed) {
           _connectionController.add(state.isActive);
         }
       });
 
-      // Start BLE scan
       await _client!.startScan((devices) {
         if (!_peersController.isClosed) _peersController.add(devices);
       });
@@ -127,6 +139,41 @@ class WifiDirectService {
       return null;
     } catch (e) {
       return 'Failed to start client: $e';
+    }
+  }
+
+  // ── Message Handler ───────────────────────────────────────────
+  Future<void> _handleIncomingMessage(
+      String msg, String ourPublicKey) async {
+    if (msg.startsWith('PK:') && !_cryptoReady) {
+      // Key exchange — only process once
+      final peerPublicKey = msg.substring(3);
+      await _crypto.deriveSharedSecret(peerPublicKey);
+      _cryptoReady = true;
+      debugPrint('Crypto ready: shared secret derived');
+
+      // Client sends its public key back to host
+      if (!_isHost) {
+        await _client!.broadcastText('PK:$ourPublicKey');
+        debugPrint('Client: Sent public key to host');
+      }
+    } else if (msg.startsWith('ENC:')) {
+      if (_cryptoReady) {
+        try {
+          final encrypted = msg.substring(4);
+          final decrypted = await _crypto.decrypt(encrypted);
+          if (!_messageController.isClosed) {
+            _messageController.add(decrypted);
+          }
+        } catch (e) {
+          debugPrint('Decryption failed: $e');
+        }
+      }
+    } else if (!msg.startsWith('PK:')) {
+      // Plain text fallback
+      if (!_messageController.isClosed) {
+        _messageController.add(msg);
+      }
     }
   }
 
@@ -146,22 +193,30 @@ class WifiDirectService {
 
   // ── SEND ──────────────────────────────────────────────────────
   Future<void> sendMessage(String message) async {
-    if (_isHost) {
-      await _host?.broadcastText(message);
+    if (_cryptoReady) {
+      final encrypted = await _crypto.encrypt(message);
+      final payload = 'ENC:$encrypted';
+      if (_isHost) {
+        await _host?.broadcastText(payload);
+      } else {
+        await _client?.broadcastText(payload);
+      }
     } else {
-      await _client?.broadcastText(message);
+      if (_isHost) {
+        await _host?.broadcastText(message);
+      } else {
+        await _client?.broadcastText(message);
+      }
     }
   }
 
   Future<void> stopScan() async => await _client?.stopScan();
 
   Future<void> disconnect() async {
-    try {
-      await _host?.removeGroup();
-    } catch (_) {}
-    try {
-      await _client?.disconnect();
-    } catch (_) {}
+    try { await _host?.removeGroup(); } catch (_) {}
+    try { await _client?.disconnect(); } catch (_) {}
+    _cryptoReady = false;
+    _keyExchangeDone = false;
   }
 
   void dispose() {
@@ -169,13 +224,10 @@ class WifiDirectService {
     if (!_messageController.isClosed) _messageController.close();
     if (!_peersController.isClosed) _peersController.close();
     if (!_connectionController.isClosed) _connectionController.close();
+    _crypto.dispose();
     if (_initialized) {
-      try {
-        _host?.dispose();
-      } catch (_) {}
-      try {
-        _client?.dispose();
-      } catch (_) {}
+      try { _host?.dispose(); } catch (_) {}
+      try { _client?.dispose(); } catch (_) {}
     }
   }
 }
