@@ -41,6 +41,8 @@ dependencies:
     path: packages/flutter_p2p_connection
   permission_handler: ^11.4.0
   cryptography: ^2.9.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
 
 dev_dependencies:
   flutter_test:

@@ -2,14 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:campus_mesh/app.dart';
 import 'package:campus_mesh/services/crypto_service.dart';
+import 'package:campus_mesh/services/storage_service.dart';
 
 void main() {
   // UI test
-  testWidgets('CampusMesh app launches', (WidgetTester tester) async {
-    await tester.pumpWidget(const CampusMeshApp());
-    expect(find.byType(MaterialApp), findsOneWidget);
-  });
-
+testWidgets('CampusMesh app launches', (WidgetTester tester) async {
+  final storage = StorageService();
+  await storage.init();
+  await tester.pumpWidget(CampusMeshApp(storage: storage));
+  expect(find.byType(MaterialApp), findsOneWidget);
+});
   // Crypto unit tests
   group('CryptoService', () {
     test('generates a public key', () async {

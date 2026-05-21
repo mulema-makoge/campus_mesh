@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'features/discovery/peer_list_screen.dart';
 import 'features/discovery/wifi_direct_screen.dart';
+import 'services/storage_service.dart';
 
 class CampusMeshApp extends StatelessWidget {
-  const CampusMeshApp({super.key});
+  final StorageService storage;
+  const CampusMeshApp({super.key, required this.storage});
 
   @override
   Widget build(BuildContext context) {
@@ -14,13 +16,14 @@ class CampusMeshApp extends StatelessWidget {
         colorSchemeSeed: Colors.blue,
         useMaterial3: true,
       ),
-      home: const MainScreen(),
+      home: MainScreen(storage: storage),
     );
   }
 }
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final StorageService storage;
+  const MainScreen({super.key, required this.storage});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -29,15 +32,15 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    PeerListScreen(),
-    WifiDirectScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final screens = [
+      const PeerListScreen(),
+      WifiDirectScreen(storage: widget.storage),
+    ];
+
     return Scaffold(
-      body: _screens[_currentIndex],
+      body: screens[_currentIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) =>
