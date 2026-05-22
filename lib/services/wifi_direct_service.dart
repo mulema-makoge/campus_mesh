@@ -77,7 +77,6 @@ class WifiDirectService {
       _host!.streamClientList().listen((clients) async {
         if (clients.isNotEmpty && !_connectionController.isClosed) {
           _connectionController.add(true);
-          // Send public key only once
           if (!_keyExchangeDone) {
             _keyExchangeDone = true;
             await Future.delayed(const Duration(milliseconds: 500));
@@ -146,13 +145,11 @@ class WifiDirectService {
   Future<void> _handleIncomingMessage(
       String msg, String ourPublicKey) async {
     if (msg.startsWith('PK:') && !_cryptoReady) {
-      // Key exchange — only process once
       final peerPublicKey = msg.substring(3);
       await _crypto.deriveSharedSecret(peerPublicKey);
       _cryptoReady = true;
       debugPrint('Crypto ready: shared secret derived');
 
-      // Client sends its public key back to host
       if (!_isHost) {
         await _client!.broadcastText('PK:$ourPublicKey');
         debugPrint('Client: Sent public key to host');
@@ -169,8 +166,12 @@ class WifiDirectService {
           debugPrint('Decryption failed: $e');
         }
       }
+    } else if (msg == 'TYPING:') {
+      // Pass typing signal directly to UI without decryption
+      if (!_messageController.isClosed) {
+        _messageController.add('TYPING:');
+      }
     } else if (!msg.startsWith('PK:')) {
-      // Plain text fallback
       if (!_messageController.isClosed) {
         _messageController.add(msg);
       }
@@ -207,6 +208,16 @@ class WifiDirectService {
       } else {
         await _client?.broadcastText(message);
       }
+    }
+  }
+
+  // ── TYPING INDICATOR ──────────────────────────────────────────
+  Future<void> sendTypingIndicator() async {
+    if (!_cryptoReady) return;
+    if (_isHost) {
+      await _host?.broadcastText('TYPING:');
+    } else {
+      await _client?.broadcastText('TYPING:');
     }
   }
 

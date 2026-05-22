@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_p2p_connection/flutter_p2p_connection.dart';
 import '../../models/peer.dart';
@@ -25,6 +26,10 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   String _statusText = 'Choose your role below';
   UserProfile? _myProfile;
   UserProfile? _peerProfile;
+
+  bool _peerIsTyping = false;
+  Timer? _typingTimer;
+  Timer? _peerTypingTimer;
 
   final List<int> _colorOptions = [
     0xFF2196F3, 0xFF4CAF50, 0xFFFF5722,
@@ -54,7 +59,14 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           _statusText =
               'Connected as ${_service.isHost ? "Host" : "Client"} with ${_peerProfile!.displayName}';
         });
+      } else if (message == 'TYPING:') {
+        setState(() => _peerIsTyping = true);
+        _peerTypingTimer?.cancel();
+        _peerTypingTimer = Timer(const Duration(seconds: 3), () {
+          setState(() => _peerIsTyping = false);
+        });
       } else {
+        setState(() => _peerIsTyping = false);
         final senderName = _peerProfile?.displayName ?? 'Peer';
         setState(() =>
             _messages.add('$senderName: $message [${_timestamp()}]'));
@@ -193,6 +205,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
 
   @override
   void dispose() {
+    _typingTimer?.cancel();
+    _peerTypingTimer?.cancel();
     _service.dispose();
     _messageController.dispose();
     _nameController.dispose();
@@ -258,7 +272,11 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                 if (_isLoading) const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    _isConnected ? '🟢 $_statusText' : '🔵 $_statusText',
+                    _peerIsTyping
+                        ? '✏️ ${_peerProfile?.displayName ?? "Peer"} is typing...'
+                        : _isConnected
+                            ? '🟢 $_statusText'
+                            : '🔵 $_statusText',
                     style: const TextStyle(
                         fontWeight: FontWeight.bold, fontSize: 13),
                   ),
@@ -411,7 +429,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                       final myName = _myProfile?.displayName ?? 'Me';
                       final isMine = msg.startsWith('$myName:');
 
-                      // Split message and timestamp
                       final timestampMatch =
                           RegExp(r'\[(\d{2}:\d{2})\]$').firstMatch(msg);
                       final timestamp = timestampMatch?.group(1) ?? '';
@@ -475,6 +492,13 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                         hintText: 'Type a message...',
                         border: OutlineInputBorder(),
                       ),
+                      onChanged: (_) {
+                        _typingTimer?.cancel();
+                        _typingTimer = Timer(
+                          const Duration(milliseconds: 300),
+                          () => _service.sendTypingIndicator(),
+                        );
+                      },
                     ),
                   ),
                   const SizedBox(width: 8),
