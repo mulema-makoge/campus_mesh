@@ -17,7 +17,9 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   final WifiDirectService _service = WifiDirectService();
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
-  final List<String> _messages = [];
+
+  // Each message is stored as a map with content and read status
+  final List<Map<String, dynamic>> _messages = [];
 
   List<BleDiscoveredDevice> _peers = [];
   bool _isConnected = false;
@@ -65,11 +67,26 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
         _peerTypingTimer = Timer(const Duration(seconds: 3), () {
           setState(() => _peerIsTyping = false);
         });
+      } else if (message == 'READ:') {
+        // Mark the last unread sent message as read
+        setState(() {
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            if (_messages[i]['isMine'] == true &&
+                _messages[i]['read'] == false) {
+              _messages[i]['read'] = true;
+              break;
+            }
+          }
+        });
       } else {
         setState(() => _peerIsTyping = false);
         final senderName = _peerProfile?.displayName ?? 'Peer';
-        setState(() =>
-            _messages.add('$senderName: $message [${_timestamp()}]'));
+        setState(() => _messages.add({
+              'content': '$senderName: $message',
+              'time': _timestamp(),
+              'isMine': false,
+              'read': true,
+            }));
       }
     });
 
@@ -199,7 +216,12 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     if (text.isEmpty) return;
     await _service.sendMessage(text);
     final myName = _myProfile?.displayName ?? 'Me';
-    setState(() => _messages.add('$myName: $text [${_timestamp()}]'));
+    setState(() => _messages.add({
+          'content': '$myName: $text',
+          'time': _timestamp(),
+          'isMine': true,
+          'read': false,
+        }));
     _messageController.clear();
   }
 
@@ -426,14 +448,10 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
                       final msg = _messages[index];
-                      final myName = _myProfile?.displayName ?? 'Me';
-                      final isMine = msg.startsWith('$myName:');
-
-                      final timestampMatch =
-                          RegExp(r'\[(\d{2}:\d{2})\]$').firstMatch(msg);
-                      final timestamp = timestampMatch?.group(1) ?? '';
-                      final content = msg
-                          .replaceAll(RegExp(r'\s*\[\d{2}:\d{2}\]$'), '');
+                      final isMine = msg['isMine'] as bool;
+                      final content = msg['content'] as String;
+                      final time = msg['time'] as String;
+                      final read = msg['read'] as bool;
 
                       return Align(
                         alignment: isMine
@@ -462,14 +480,31 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                                         : Colors.black),
                               ),
                               const SizedBox(height: 2),
-                              Text(
-                                timestamp,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: isMine
-                                      ? Colors.white70
-                                      : Colors.black45,
-                                ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    time,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: isMine
+                                          ? Colors.white70
+                                          : Colors.black45,
+                                    ),
+                                  ),
+                                  if (isMine) ...[
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      read
+                                          ? Icons.done_all
+                                          : Icons.done,
+                                      size: 12,
+                                      color: read
+                                          ? Colors.lightBlueAccent
+                                          : Colors.white70,
+                                    ),
+                                  ],
+                                ],
                               ),
                             ],
                           ),

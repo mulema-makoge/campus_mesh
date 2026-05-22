@@ -162,14 +162,19 @@ class WifiDirectService {
           if (!_messageController.isClosed) {
             _messageController.add(decrypted);
           }
+          // Send read receipt automatically
+          await sendReadReceipt();
         } catch (e) {
           debugPrint('Decryption failed: $e');
         }
       }
     } else if (msg == 'TYPING:') {
-      // Pass typing signal directly to UI without decryption
       if (!_messageController.isClosed) {
         _messageController.add('TYPING:');
+      }
+    } else if (msg == 'READ:') {
+      if (!_messageController.isClosed) {
+        _messageController.add('READ:');
       }
     } else if (!msg.startsWith('PK:')) {
       if (!_messageController.isClosed) {
@@ -218,6 +223,16 @@ class WifiDirectService {
       await _host?.broadcastText('TYPING:');
     } else {
       await _client?.broadcastText('TYPING:');
+    }
+  }
+
+  // ── READ RECEIPT ──────────────────────────────────────────────
+  Future<void> sendReadReceipt() async {
+    if (!_cryptoReady) return;
+    if (_isHost) {
+      await _host?.broadcastText('READ:');
+    } else {
+      await _client?.broadcastText('READ:');
     }
   }
 
