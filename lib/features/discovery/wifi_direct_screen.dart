@@ -32,6 +32,11 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   ];
   int _selectedColor = 0xFF2196F3;
 
+  String _timestamp() {
+    final now = DateTime.now();
+    return '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -51,7 +56,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
         });
       } else {
         final senderName = _peerProfile?.displayName ?? 'Peer';
-        setState(() => _messages.add('$senderName: $message'));
+        setState(() =>
+            _messages.add('$senderName: $message [${_timestamp()}]'));
       }
     });
 
@@ -181,7 +187,7 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     if (text.isEmpty) return;
     await _service.sendMessage(text);
     final myName = _myProfile?.displayName ?? 'Me';
-    setState(() => _messages.add('$myName: $text'));
+    setState(() => _messages.add('$myName: $text [${_timestamp()}]'));
     _messageController.clear();
   }
 
@@ -404,24 +410,51 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                       final msg = _messages[index];
                       final myName = _myProfile?.displayName ?? 'Me';
                       final isMine = msg.startsWith('$myName:');
+
+                      // Split message and timestamp
+                      final timestampMatch =
+                          RegExp(r'\[(\d{2}:\d{2})\]$').firstMatch(msg);
+                      final timestamp = timestampMatch?.group(1) ?? '';
+                      final content = msg
+                          .replaceAll(RegExp(r'\s*\[\d{2}:\d{2}\]$'), '');
+
                       return Align(
                         alignment: isMine
                             ? Alignment.centerRight
                             : Alignment.centerLeft,
                         child: Container(
                           margin: const EdgeInsets.symmetric(vertical: 4),
-                          padding: const EdgeInsets.all(10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: isMine
                                 ? Theme.of(context).colorScheme.primary
                                 : Colors.grey[200],
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Text(
-                            msg,
-                            style: TextStyle(
-                                color:
-                                    isMine ? Colors.white : Colors.black),
+                          child: Column(
+                            crossAxisAlignment: isMine
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                content,
+                                style: TextStyle(
+                                    color: isMine
+                                        ? Colors.white
+                                        : Colors.black),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                timestamp,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: isMine
+                                      ? Colors.white70
+                                      : Colors.black45,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       );
