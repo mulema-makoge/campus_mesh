@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'features/channels/channel_screen.dart';
 import 'features/discovery/peer_list_screen.dart';
 import 'features/discovery/wifi_direct_screen.dart';
 import 'services/storage_service.dart';
+import 'services/wifi_direct_service.dart';
 
 class CampusMeshApp extends StatelessWidget {
   final StorageService storage;
@@ -31,12 +33,26 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+  final WifiDirectService _wifiService = WifiDirectService();
+
+  @override
+  void dispose() {
+    _wifiService.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
       const PeerListScreen(),
-      WifiDirectScreen(storage: widget.storage),
+      WifiDirectScreen(
+        storage: widget.storage,
+        service: _wifiService,
+      ),
+      ChannelScreen(
+        storage: widget.storage,
+        service: _wifiService,
+      ),
     ];
 
     return Scaffold(
@@ -52,7 +68,11 @@ class _MainScreenState extends State<MainScreen> {
           ),
           NavigationDestination(
             icon: Icon(Icons.wifi),
-            label: 'Wi-Fi Direct',
+            label: 'Direct Chat',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.group),
+            label: 'Channel',
           ),
         ],
       ),

@@ -149,7 +149,6 @@ class WifiDirectService {
       await _crypto.deriveSharedSecret(peerPublicKey);
       _cryptoReady = true;
       debugPrint('Crypto ready: shared secret derived');
-
       if (!_isHost) {
         await _client!.broadcastText('PK:$ourPublicKey');
         debugPrint('Client: Sent public key to host');
@@ -162,7 +161,6 @@ class WifiDirectService {
           if (!_messageController.isClosed) {
             _messageController.add(decrypted);
           }
-          // Send read receipt automatically
           await sendReadReceipt();
         } catch (e) {
           debugPrint('Decryption failed: $e');
@@ -197,7 +195,7 @@ class WifiDirectService {
     }
   }
 
-  // ── SEND ──────────────────────────────────────────────────────
+  // ── SEND MESSAGE ──────────────────────────────────────────────
   Future<void> sendMessage(String message) async {
     if (_cryptoReady) {
       final encrypted = await _crypto.encrypt(message);
@@ -214,6 +212,13 @@ class WifiDirectService {
         await _client?.broadcastText(message);
       }
     }
+  }
+
+  // ── SEND CHANNEL MESSAGE ──────────────────────────────────────
+  Future<void> sendChannelMessage(String message,
+      {bool isBroadcast = false}) async {
+    final prefix = isBroadcast ? 'BROADCAST:' : 'CHANNEL:';
+    await sendMessage('$prefix$message');
   }
 
   // ── TYPING INDICATOR ──────────────────────────────────────────

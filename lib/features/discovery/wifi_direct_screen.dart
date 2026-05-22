@@ -7,18 +7,23 @@ import '../../services/wifi_direct_service.dart';
 
 class WifiDirectScreen extends StatefulWidget {
   final StorageService storage;
-  const WifiDirectScreen({super.key, required this.storage});
+  final WifiDirectService service;
+
+  const WifiDirectScreen({
+    super.key,
+    required this.storage,
+    required this.service,
+  });
 
   @override
   State<WifiDirectScreen> createState() => _WifiDirectScreenState();
 }
 
 class _WifiDirectScreenState extends State<WifiDirectScreen> {
-  final WifiDirectService _service = WifiDirectService();
+  WifiDirectService get _service => widget.service;
+
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
-
-  // Each message is stored as a map with content and read status
   final List<Map<String, dynamic>> _messages = [];
 
   List<BleDiscoveredDevice> _peers = [];
@@ -54,6 +59,13 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     });
 
     _service.messageStream.listen((message) {
+      // Ignore channel messages in direct chat
+      if (message.startsWith('CHANNEL:') ||
+          message.startsWith('BROADCAST:') ||
+          message.startsWith('CHANNEL_JOIN:')) {
+        return;
+      }
+
       if (message.startsWith('PROFILE:')) {
         final profileJson = message.substring(8);
         setState(() {
@@ -68,7 +80,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           setState(() => _peerIsTyping = false);
         });
       } else if (message == 'READ:') {
-        // Mark the last unread sent message as read
         setState(() {
           for (int i = _messages.length - 1; i >= 0; i--) {
             if (_messages[i]['isMine'] == true &&
@@ -229,7 +240,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   void dispose() {
     _typingTimer?.cancel();
     _peerTypingTimer?.cancel();
-    _service.dispose();
     _messageController.dispose();
     _nameController.dispose();
     super.dispose();
@@ -348,7 +358,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                   Row(
                     children: _colorOptions.map((color) {
                       return GestureDetector(
-                        onTap: () => setState(() => _selectedColor = color),
+                        onTap: () =>
+                            setState(() => _selectedColor = color),
                         child: Container(
                           margin: const EdgeInsets.only(right: 8),
                           width: 28,
@@ -357,7 +368,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                             color: Color(color),
                             shape: BoxShape.circle,
                             border: _selectedColor == color
-                                ? Border.all(color: Colors.black, width: 2)
+                                ? Border.all(
+                                    color: Colors.black, width: 2)
                                 : null,
                           ),
                         ),
@@ -384,7 +396,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: _isLoading ? null : _startAsClient,
+                          onPressed:
+                              _isLoading ? null : _startAsClient,
                           icon: const Icon(Icons.phone_android),
                           label: const Text('Client'),
                           style: ElevatedButton.styleFrom(
@@ -458,12 +471,15 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                             ? Alignment.centerRight
                             : Alignment.centerLeft,
                         child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4),
+                          margin:
+                              const EdgeInsets.symmetric(vertical: 4),
                           padding: const EdgeInsets.symmetric(
                               horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: isMine
-                                ? Theme.of(context).colorScheme.primary
+                                ? Theme.of(context)
+                                    .colorScheme
+                                    .primary
                                 : Colors.grey[200],
                             borderRadius: BorderRadius.circular(12),
                           ),
