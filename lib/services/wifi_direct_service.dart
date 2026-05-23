@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_p2p_connection/flutter_p2p_connection.dart';
+import '../models/message.dart';
 import 'crypto_service.dart';
 
 class WifiDirectService {
@@ -11,6 +13,11 @@ class WifiDirectService {
 
   final _crypto = CryptoService();
   bool _cryptoReady = false;
+
+  // Relay: seen message IDs to prevent loops
+  final Set<String> _seenMessageIds = {};
+  static const int _defaultTTL = 3;
+  String? _myDeviceId;
 
   StreamSubscription<String>? _messageSubscription;
 
@@ -24,9 +31,19 @@ class WifiDirectService {
   final _connectionController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connectionController.stream;
 
+  // Relay map stream — emits hop paths for visualisation
+  final _relayController =
+      StreamController<List<String>>.broadcast();
+  Stream<List<String>> get relayStream => _relayController.stream;
+
   bool _isHost = false;
   bool get isHost => _isHost;
   bool get cryptoReady => _cryptoReady;
+
+  String _generateId() {
+    final rand = Random.secure();
+    return List.generate(8, (_) => rand.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  }
 
   static Future<bool> isBluetoothOn() async {
     final host = FlutterP2pHost();
@@ -40,6 +57,7 @@ class WifiDirectService {
   Future<String?> startAsHost() async {
     try {
       _isHost = true;
+      _myDeviceId = 'host_${_generateId().substring(0, 4)}';
       _host = FlutterP2pHost();
       await _host!.initialize();
       _initialized = true;
@@ -97,6 +115,7 @@ class WifiDirectService {
   Future<String?> startAsClient() async {
     try {
       _isHost = false;
+      _myDeviceId = 'client_${_generateId().substring(0, 4)}';
       _client = FlutterP2pClient();
       await _client!.initialize();
       _initialized = true;
@@ -153,6 +172,9 @@ class WifiDirectService {
         await _client!.broadcastText('PK:$ourPublicKey');
         debugPrint('Client: Sent public key to host');
       }
+    } else if (msg.startsWith('MESH:')) {
+      // Mesh relay message
+      await _handleMeshMessage(msg.substring(5));
     } else if (msg.startsWith('ENC:')) {
       if (_cryptoReady) {
         try {
@@ -178,6 +200,51 @@ class WifiDirectService {
       if (!_messageController.isClosed) {
         _messageController.add(msg);
       }
+    }
+  }
+
+  // ── Mesh Relay Handler ────────────────────────────────────────
+  Future<void> _handleMeshMessage(String meshJson) async {
+    try {
+      final meshMsg = MeshMessage.fromJson(meshJson);
+
+      // Drop if already seen — prevents loops
+      if (_seenMessageIds.contains(meshMsg.id)) {
+        debugPrint('Relay: Dropping duplicate message ${meshMsg.id}');
+        return;
+      }
+      _seenMessageIds.add(meshMsg.id);
+
+      // Emit hop path for relay map
+      if (!_relayController.isClosed) {
+        _relayController.add([...meshMsg.hopPath, _myDeviceId ?? 'unknown']);
+      }
+
+      // Decrypt and deliver the payload
+      if (_cryptoReady) {
+        try {
+          final decrypted = await _crypto.decrypt(meshMsg.payload);
+          if (!_messageController.isClosed) {
+            _messageController.add('📡 $decrypted');
+          }
+        } catch (_) {
+          // Not for us or decryption failed — still relay
+        }
+      }
+
+      // Relay if TTL > 0
+      if (meshMsg.ttl > 0) {
+        final relayed = meshMsg.decrementTTL(_myDeviceId ?? 'unknown');
+        final relayPayload = 'MESH:${relayed.toJson()}';
+        if (_isHost) {
+          await _host?.broadcastText(relayPayload);
+        } else {
+          await _client?.broadcastText(relayPayload);
+        }
+        debugPrint('Relay: Forwarded message ${meshMsg.id} with TTL ${relayed.ttl}');
+      }
+    } catch (e) {
+      debugPrint('Relay: Error handling mesh message: $e');
     }
   }
 
@@ -211,6 +278,26 @@ class WifiDirectService {
       } else {
         await _client?.broadcastText(message);
       }
+    }
+  }
+
+  // ── SEND MESH MESSAGE (with relay) ────────────────────────────
+  Future<void> sendMeshMessage(String message) async {
+    if (!_cryptoReady) return;
+    final encrypted = await _crypto.encrypt(message);
+    final meshMsg = MeshMessage(
+      id: _generateId(),
+      payload: encrypted,
+      ttl: _defaultTTL,
+      hopPath: [_myDeviceId ?? 'unknown'],
+      senderId: _myDeviceId ?? 'unknown',
+    );
+    _seenMessageIds.add(meshMsg.id);
+    final payload = 'MESH:${meshMsg.toJson()}';
+    if (_isHost) {
+      await _host?.broadcastText(payload);
+    } else {
+      await _client?.broadcastText(payload);
     }
   }
 
@@ -248,6 +335,7 @@ class WifiDirectService {
     try { await _client?.disconnect(); } catch (_) {}
     _cryptoReady = false;
     _keyExchangeDone = false;
+    _seenMessageIds.clear();
   }
 
   void dispose() {
@@ -255,6 +343,7 @@ class WifiDirectService {
     if (!_messageController.isClosed) _messageController.close();
     if (!_peersController.isClosed) _peersController.close();
     if (!_connectionController.isClosed) _connectionController.close();
+    if (!_relayController.isClosed) _relayController.close();
     _crypto.dispose();
     if (_initialized) {
       try { _host?.dispose(); } catch (_) {}
