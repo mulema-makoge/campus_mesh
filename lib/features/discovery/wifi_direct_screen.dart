@@ -39,10 +39,10 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   Timer? _peerTypingTimer;
 
   final List<int> _colorOptions = [
-    0xFF2196F3, 0xFF4CAF50, 0xFFFF5722,
+    0xFF1B4F8A, 0xFF4CAF50, 0xFFFF5722,
     0xFF9C27B0, 0xFFFF9800, 0xFF00BCD4,
   ];
-  int _selectedColor = 0xFF2196F3;
+  int _selectedColor = 0xFF1B4F8A;
 
   String _timestamp() {
     final now = DateTime.now();
@@ -59,7 +59,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     });
 
     _service.messageStream.listen((message) {
-      // Ignore channel messages in direct chat
       if (message.startsWith('CHANNEL:') ||
           message.startsWith('BROADCAST:') ||
           message.startsWith('CHANNEL_JOIN:')) {
@@ -71,7 +70,7 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
         setState(() {
           _peerProfile = UserProfile.fromJson(profileJson);
           _statusText =
-              'Connected as ${_service.isHost ? "Host" : "Client"} with ${_peerProfile!.displayName}';
+              'Connected with ${_peerProfile!.displayName}';
         });
       } else if (message == 'TYPING:') {
         setState(() => _peerIsTyping = true);
@@ -89,14 +88,29 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
             }
           }
         });
-      } else {
-        setState(() => _peerIsTyping = false);
-        final senderName = _peerProfile?.displayName ?? 'Peer';
+      } else if (message.startsWith('📡')) {
+        // Relay message
+        final content = message.substring(2).trim();
         setState(() => _messages.add({
-              'content': '$senderName: $message',
+              'content': content,
               'time': _timestamp(),
               'isMine': false,
               'read': true,
+              'isRelay': true,
+              'senderName': _peerProfile?.displayName ?? 'Relay',
+              'senderColor': _peerProfile?.avatarColorValue ?? 0xFF9C27B0,
+            }));
+      } else {
+        setState(() => _peerIsTyping = false);
+        setState(() => _messages.add({
+              'content': message,
+              'time': _timestamp(),
+              'isMine': false,
+              'read': true,
+              'isRelay': false,
+              'senderName': _peerProfile?.displayName ?? 'Peer',
+              'senderColor':
+                  _peerProfile?.avatarColorValue ?? 0xFF2196F3,
             }));
       }
     });
@@ -105,9 +119,12 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       setState(() {
         _isConnected = connected;
         if (connected) {
-          _statusText =
-              'Connected as ${_service.isHost ? "Host" : "Client"}';
+          _statusText = _service.isHost
+              ? 'Waiting for peer...'
+              : 'Connected';
           _shareProfile();
+        } else {
+          _statusText = 'Disconnected';
         }
       });
     });
@@ -226,12 +243,14 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
     await _service.sendMessage(text);
-    final myName = _myProfile?.displayName ?? 'Me';
     setState(() => _messages.add({
-          'content': '$myName: $text',
+          'content': text,
           'time': _timestamp(),
           'isMine': true,
           'read': false,
+          'isRelay': false,
+          'senderName': _myProfile?.displayName ?? 'Me',
+          'senderColor': _myProfile?.avatarColorValue ?? 0xFF1B4F8A,
         }));
     _messageController.clear();
   }
@@ -245,18 +264,16 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     super.dispose();
   }
 
-  Widget _buildAvatar(UserProfile? profile, {double radius = 20}) {
-    final name = profile?.displayName ?? '?';
-    final color = Color(profile?.avatarColorValue ?? 0xFF2196F3);
+  Widget _buildAvatar(String name, int colorValue, {double radius = 18}) {
     return CircleAvatar(
       radius: radius,
-      backgroundColor: color,
+      backgroundColor: Color(colorValue),
       child: Text(
         name[0].toUpperCase(),
         style: TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.bold,
-          fontSize: radius * 0.9,
+          fontSize: radius * 0.85,
         ),
       ),
     );
@@ -268,37 +285,55 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            if (_myProfile != null) ...[
-              _buildAvatar(_myProfile, radius: 16),
-              const SizedBox(width: 8),
-            ],
-            const Text('CampusMesh'),
+            if (_myProfile != null)
+              _buildAvatar(
+                _myProfile!.displayName,
+                _myProfile!.avatarColorValue,
+                radius: 16,
+              ),
+            const SizedBox(width: 8),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Direct Chat',
+                    style: TextStyle(fontSize: 16)),
+                if (_peerProfile != null)
+                  Text(
+                    _peerProfile!.displayName,
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.white70),
+                  ),
+              ],
+            ),
           ],
         ),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
           // Status bar
-          Container(
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             color: _isConnected
-                ? Colors.green[100]
+                ? Colors.green[50]
                 : _role == 'none'
                     ? Colors.orange[50]
                     : Colors.blue[50],
             child: Row(
               children: [
-                if (_peerProfile != null) ...[
-                  _buildAvatar(_peerProfile, radius: 14),
-                  const SizedBox(width: 8),
-                ],
+                if (_peerProfile != null)
+                  _buildAvatar(
+                    _peerProfile!.displayName,
+                    _peerProfile!.avatarColorValue,
+                    radius: 14,
+                  ),
+                if (_peerProfile != null) const SizedBox(width: 8),
                 if (_isLoading)
                   const SizedBox(
-                    width: 16,
-                    height: 16,
+                    width: 14,
+                    height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 if (_isLoading) const SizedBox(width: 8),
@@ -310,7 +345,7 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                             ? '🟢 $_statusText'
                             : '🔵 $_statusText',
                     style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 13),
+                        fontSize: 12, fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
@@ -319,125 +354,161 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
 
           // Profile setup + role selection
           if (_role == 'none')
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Your profile',
-                      style: TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      _buildAvatar(
-                        UserProfile(
-                          displayName: _nameController.text.isEmpty
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Your Profile',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        _buildAvatar(
+                          _nameController.text.isEmpty
                               ? '?'
                               : _nameController.text,
-                          avatarColorValue: _selectedColor,
+                          _selectedColor,
+                          radius: 28,
                         ),
-                        radius: 24,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextField(
-                          controller: _nameController,
-                          decoration: const InputDecoration(
-                            hintText: 'Enter your display name',
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 8),
-                          ),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: _colorOptions.map((color) {
-                      return GestureDetector(
-                        onTap: () =>
-                            setState(() => _selectedColor = color),
-                        child: Container(
-                          margin: const EdgeInsets.only(right: 8),
-                          width: 28,
-                          height: 28,
-                          decoration: BoxDecoration(
-                            color: Color(color),
-                            shape: BoxShape.circle,
-                            border: _selectedColor == color
-                                ? Border.all(
-                                    color: Colors.black, width: 2)
-                                : null,
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: TextField(
+                            controller: _nameController,
+                            decoration: const InputDecoration(
+                              hintText: 'Display name',
+                              labelText: 'Your name',
+                            ),
+                            onChanged: (_) => setState(() {}),
                           ),
                         ),
-                      );
-                    }).toList(),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Make sure Bluetooth and Wi-Fi are ON:',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isLoading ? null : _startAsHost,
-                          icon: const Icon(Icons.router),
-                          label: const Text('Host'),
-                          style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.all(14)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('Avatar colour',
+                        style: TextStyle(
+                            fontSize: 13, color: Colors.grey)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: _colorOptions.map((color) {
+                        return GestureDetector(
+                          onTap: () =>
+                              setState(() => _selectedColor = color),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.only(right: 10),
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: Color(color),
+                              shape: BoxShape.circle,
+                              border: _selectedColor == color
+                                  ? Border.all(
+                                      color: Colors.black87, width: 2.5)
+                                  : null,
+                              boxShadow: _selectedColor == color
+                                  ? [
+                                      BoxShadow(
+                                        color: Color(color)
+                                            .withValues(alpha: 0.4),
+                                        blurRadius: 8,
+                                      )
+                                    ]
+                                  : null,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 24),
+                    const Divider(),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Make sure Bluetooth and Wi-Fi are ON',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _isLoading ? null : _startAsHost,
+                            icon: const Icon(Icons.router, size: 18),
+                            label: const Text('Host'),
+                            style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.all(14)),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed:
-                              _isLoading ? null : _startAsClient,
-                          icon: const Icon(Icons.phone_android),
-                          label: const Text('Client'),
-                          style: ElevatedButton.styleFrom(
-                              padding: const EdgeInsets.all(14)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed:
+                                _isLoading ? null : _startAsClient,
+                            icon: const Icon(Icons.phone_android,
+                                size: 18),
+                            label: const Text('Client'),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.all(14),
+                              backgroundColor: Colors.white,
+                              foregroundColor: const Color(0xFF1B4F8A),
+                              side: const BorderSide(
+                                  color: Color(0xFF1B4F8A)),
+                            ),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
 
           // Peer list for client
           if (_role == 'client' && !_isConnected)
             Expanded(
-              flex: 1,
               child: _peers.isEmpty
                   ? const Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           CircularProgressIndicator(),
-                          SizedBox(height: 12),
-                          Text('Scanning for host via BLE...'),
+                          SizedBox(height: 16),
+                          Text('Scanning for host via BLE...',
+                              style: TextStyle(color: Colors.grey)),
                         ],
                       ),
                     )
-                  : ListView.builder(
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(12),
                       itemCount: _peers.length,
+                      separatorBuilder: (_, __) =>
+                          const SizedBox(height: 8),
                       itemBuilder: (context, index) {
                         final peer = _peers[index];
-                        return ListTile(
-                          leading: const Icon(Icons.router),
-                          title: Text(peer.deviceName),
-                          subtitle: Text(peer.deviceAddress),
-                          trailing: ElevatedButton(
-                            onPressed: _isLoading
-                                ? null
-                                : () => _connectToPeer(peer),
-                            child: const Text('Connect'),
+                        return Card(
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: const Color(0xFF1B4F8A),
+                              child: Text(
+                                peer.deviceName[0].toUpperCase(),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            title: Text(peer.deviceName,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600)),
+                            subtitle: Text(peer.deviceAddress,
+                                style: const TextStyle(fontSize: 12)),
+                            trailing: ElevatedButton(
+                              onPressed: _isLoading
+                                  ? null
+                                  : () => _connectToPeer(peer),
+                              child: const Text('Connect'),
+                            ),
                           ),
                         );
                       },
@@ -445,103 +516,200 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
             ),
 
           // Messages
-          Expanded(
-            flex: 2,
-            child: _messages.isEmpty
-                ? Center(
-                    child: Text(
-                      _isConnected
-                          ? 'Type a message below'
-                          : 'No messages yet',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = _messages[index];
-                      final isMine = msg['isMine'] as bool;
-                      final content = msg['content'] as String;
-                      final time = msg['time'] as String;
-                      final read = msg['read'] as bool;
-
-                      return Align(
-                        alignment: isMine
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft,
-                        child: Container(
-                          margin:
-                              const EdgeInsets.symmetric(vertical: 4),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: isMine
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                : Colors.grey[200],
-                            borderRadius: BorderRadius.circular(12),
+          if (_role != 'none')
+            Expanded(
+              child: _messages.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.chat_bubble_outline,
+                              size: 48, color: Colors.grey[300]),
+                          const SizedBox(height: 12),
+                          Text(
+                            _isConnected
+                                ? 'Say hello! 👋'
+                                : 'Waiting for connection...',
+                            style: TextStyle(color: Colors.grey[500]),
                           ),
-                          child: Column(
-                            crossAxisAlignment: isMine
-                                ? CrossAxisAlignment.end
-                                : CrossAxisAlignment.start,
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      itemCount: _messages.length,
+                      itemBuilder: (context, index) {
+                        final msg = _messages[index];
+                        final isMine = msg['isMine'] as bool;
+                        final content = msg['content'] as String;
+                        final time = msg['time'] as String;
+                        final read = msg['read'] as bool;
+                        final isRelay = msg['isRelay'] as bool;
+                        final senderName = msg['senderName'] as String;
+                        final senderColor = msg['senderColor'] as int;
+
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            mainAxisAlignment: isMine
+                                ? MainAxisAlignment.end
+                                : MainAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Text(
-                                content,
-                                style: TextStyle(
-                                    color: isMine
-                                        ? Colors.white
-                                        : Colors.black),
-                              ),
-                              const SizedBox(height: 2),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    time,
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: isMine
-                                          ? Colors.white70
-                                          : Colors.black45,
-                                    ),
-                                  ),
-                                  if (isMine) ...[
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      read
-                                          ? Icons.done_all
-                                          : Icons.done,
-                                      size: 12,
-                                      color: read
-                                          ? Colors.lightBlueAccent
-                                          : Colors.white70,
+                              // Peer avatar on left
+                              if (!isMine) ...[
+                                _buildAvatar(senderName, senderColor,
+                                    radius: 14),
+                                const SizedBox(width: 6),
+                              ],
+                              // Message bubble
+                              Flexible(
+                                child: Column(
+                                  crossAxisAlignment: isMine
+                                      ? CrossAxisAlignment.end
+                                      : CrossAxisAlignment.start,
+                                  children: [
+                                    if (!isMine)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                            left: 4, bottom: 2),
+                                        child: Text(
+                                          senderName,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(senderColor),
+                                          ),
+                                        ),
+                                      ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 14, vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: isRelay
+                                            ? Colors.purple[50]
+                                            : isMine
+                                                ? const Color(0xFF1B4F8A)
+                                                : Colors.grey[100],
+                                        borderRadius: BorderRadius.only(
+                                          topLeft:
+                                              const Radius.circular(16),
+                                          topRight:
+                                              const Radius.circular(16),
+                                          bottomLeft: Radius.circular(
+                                              isMine ? 16 : 4),
+                                          bottomRight: Radius.circular(
+                                              isMine ? 4 : 16),
+                                        ),
+                                        border: isRelay
+                                            ? Border.all(
+                                                color: Colors.purple[200]!,
+                                                width: 1)
+                                            : null,
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: isMine
+                                            ? CrossAxisAlignment.end
+                                            : CrossAxisAlignment.start,
+                                        children: [
+                                          if (isRelay)
+                                            const Text(
+                                              '📡 Relayed',
+                                              style: TextStyle(
+                                                  fontSize: 10,
+                                                  color: Colors.purple),
+                                            ),
+                                          Text(
+                                            content,
+                                            style: TextStyle(
+                                              color: isRelay
+                                                  ? Colors.black87
+                                                  : isMine
+                                                      ? Colors.white
+                                                      : Colors.black87,
+                                              fontSize: 15,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                time,
+                                                style: TextStyle(
+                                                  fontSize: 10,
+                                                  color: isMine && !isRelay
+                                                      ? Colors.white60
+                                                      : Colors.black38,
+                                                ),
+                                              ),
+                                              if (isMine) ...[
+                                                const SizedBox(width: 4),
+                                                Icon(
+                                                  read
+                                                      ? Icons.done_all
+                                                      : Icons.done,
+                                                  size: 13,
+                                                  color: read
+                                                      ? Colors.lightBlueAccent
+                                                      : Colors.white60,
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ],
-                                ],
+                                ),
                               ),
+                              // My avatar on right
+                              if (isMine) ...[
+                                const SizedBox(width: 6),
+                                _buildAvatar(
+                                  _myProfile?.displayName ?? 'Me',
+                                  _myProfile?.avatarColorValue ??
+                                      0xFF1B4F8A,
+                                  radius: 14,
+                                ),
+                              ],
                             ],
                           ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
+                        );
+                      },
+                    ),
+            ),
 
           // Message input
           if (_isConnected)
-            Padding(
-              padding: const EdgeInsets.all(12),
+            Container(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 8,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
               child: Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _messageController,
                       decoration: const InputDecoration(
-                        hintText: 'Type a message...',
-                        border: OutlineInputBorder(),
+                        hintText: 'Message...',
+                        filled: true,
+                        fillColor: Color(0xFFF5F5F5),
+                        border: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.all(Radius.circular(24)),
+                          borderSide: BorderSide.none,
+                        ),
+                        contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
                       ),
                       onChanged: (_) {
                         _typingTimer?.cancel();
@@ -555,7 +723,11 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                   const SizedBox(width: 8),
                   IconButton.filled(
                     onPressed: _sendMessage,
-                    icon: const Icon(Icons.send),
+                    icon: const Icon(Icons.send_rounded),
+                    style: IconButton.styleFrom(
+                      backgroundColor: const Color(0xFF1B4F8A),
+                      foregroundColor: Colors.white,
+                    ),
                   ),
                 ],
               ),
