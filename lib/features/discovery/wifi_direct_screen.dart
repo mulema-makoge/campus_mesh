@@ -22,21 +22,32 @@ class WifiDirectScreen extends StatefulWidget {
 class _WifiDirectScreenState extends State<WifiDirectScreen> {
   WifiDirectService get _service => widget.service;
 
-  final TextEditingController _messageController = TextEditingController();
-  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _messageController =
+      TextEditingController();
+  final TextEditingController _nameController =
+      TextEditingController();
   final List<Map<String, dynamic>> _messages = [];
 
+  StreamSubscription<List<BleDiscoveredDevice>>? _peersSubscription;
+  StreamSubscription<String>? _messageSubscription;
+  StreamSubscription<bool>? _connectionSubscription;
+
   List<BleDiscoveredDevice> _peers = [];
+  List<SavedPeer> _savedPeers = [];
   bool _isConnected = false;
   bool _isLoading = false;
   String _role = 'none';
   String _statusText = 'Choose your role below';
   UserProfile? _myProfile;
   UserProfile? _peerProfile;
+  bool _profileExists = false;
 
   bool _peerIsTyping = false;
   Timer? _typingTimer;
   Timer? _peerTypingTimer;
+
+  int? _lastSentTimestamp;
+  int? _lastLatencyMs;
 
   final List<int> _colorOptions = [
     0xFF1B4F8A, 0xFF4CAF50, 0xFFFF5722,
@@ -49,36 +60,64 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     return '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
   }
 
+  String _formatLastSeen(String isoDate) {
+    try {
+      final date = DateTime.parse(isoDate);
+      final diff = DateTime.now().difference(date);
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      if (diff.inHours < 24) return '${diff.inHours}h ago';
+      return '${diff.inDays}d ago';
+    } catch (_) {
+      return 'Recently';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _loadProfile();
+    _loadSavedPeers();
 
-    _service.peersStream.listen((peers) {
+    _peersSubscription = _service.peersStream.listen((peers) {
+      if (!mounted) return;
       setState(() => _peers = peers);
     });
 
-    _service.messageStream.listen((message) {
+    _messageSubscription =
+        _service.messageStream.listen((message) {
+      if (!mounted) return;
+
       if (message.startsWith('CHANNEL:') ||
           message.startsWith('BROADCAST:') ||
-          message.startsWith('CHANNEL_JOIN:')) {
-        return;
-      }
+          message.startsWith('CHANNEL_JOIN:')) return;
 
       if (message.startsWith('PROFILE:')) {
         final profileJson = message.substring(8);
+        final profile = UserProfile.fromJson(profileJson);
         setState(() {
-          _peerProfile = UserProfile.fromJson(profileJson);
-          _statusText =
-              'Connected with ${_peerProfile!.displayName}';
+          _peerProfile = profile;
+          _statusText = 'Connected with ${profile.displayName}';
         });
+        // Save peer to history
+        widget.storage.savePeer(SavedPeer(
+          displayName: profile.displayName,
+          avatarColorValue: profile.avatarColorValue,
+          lastSeen: DateTime.now().toIso8601String(),
+        ));
+        _loadSavedPeers();
       } else if (message == 'TYPING:') {
         setState(() => _peerIsTyping = true);
         _peerTypingTimer?.cancel();
         _peerTypingTimer = Timer(const Duration(seconds: 3), () {
-          setState(() => _peerIsTyping = false);
+          if (mounted) setState(() => _peerIsTyping = false);
         });
       } else if (message == 'READ:') {
+        if (_lastSentTimestamp != null) {
+          final rtt = DateTime.now().millisecondsSinceEpoch -
+              _lastSentTimestamp!;
+          _lastSentTimestamp = null;
+          if (mounted) setState(() => _lastLatencyMs = rtt);
+        }
         setState(() {
           for (int i = _messages.length - 1; i >= 0; i--) {
             if (_messages[i]['isMine'] == true &&
@@ -89,7 +128,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           }
         });
       } else if (message.startsWith('📡')) {
-        // Relay message
         final content = message.substring(2).trim();
         setState(() => _messages.add({
               'content': content,
@@ -98,7 +136,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
               'read': true,
               'isRelay': true,
               'senderName': _peerProfile?.displayName ?? 'Relay',
-              'senderColor': _peerProfile?.avatarColorValue ?? 0xFF9C27B0,
+              'senderColor':
+                  _peerProfile?.avatarColorValue ?? 0xFF9C27B0,
             }));
       } else {
         setState(() => _peerIsTyping = false);
@@ -115,7 +154,9 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       }
     });
 
-    _service.connectionStream.listen((connected) {
+    _connectionSubscription =
+        _service.connectionStream.listen((connected) {
+      if (!mounted) return;
       setState(() {
         _isConnected = connected;
         if (connected) {
@@ -134,13 +175,19 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
 
   Future<void> _loadProfile() async {
     final profile = widget.storage.getProfile();
-    if (profile != null) {
+    if (profile != null && mounted) {
       setState(() {
         _myProfile = profile;
         _nameController.text = profile.displayName;
         _selectedColor = profile.avatarColorValue;
+        _profileExists = true;
       });
     }
+  }
+
+  Future<void> _loadSavedPeers() async {
+    final peers = widget.storage.getSavedPeers();
+    if (mounted) setState(() => _savedPeers = peers);
   }
 
   Future<void> _saveProfile() async {
@@ -151,7 +198,12 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       avatarColorValue: _selectedColor,
     );
     await widget.storage.saveProfile(profile);
-    setState(() => _myProfile = profile);
+    if (mounted) {
+      setState(() {
+        _myProfile = profile;
+        _profileExists = true;
+      });
+    }
   }
 
   Future<void> _shareProfile() async {
@@ -160,7 +212,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           ? const Duration(seconds: 2)
           : const Duration(milliseconds: 800);
       await Future.delayed(delay);
-      await _service.sendMessage('PROFILE:${_myProfile!.toJson()}');
+      await _service
+          .sendMessage('PROFILE:${_myProfile!.toJson()}');
     }
   }
 
@@ -169,7 +222,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
     if (!btOn && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('⚠️ Please turn Bluetooth ON before starting'),
+          content:
+              Text('⚠️ Please turn Bluetooth ON before starting'),
           duration: Duration(seconds: 5),
           backgroundColor: Colors.orange,
         ),
@@ -190,12 +244,14 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
 
   Future<void> _startAsHost() async {
     await _saveProfile();
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _role = 'host';
       _statusText = 'Setting up host...';
     });
     final error = await _service.startAsHost();
+    if (!mounted) return;
     if (error != null) {
       setState(() {
         _role = 'none';
@@ -203,19 +259,22 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       });
       _showError(error);
     } else {
-      setState(() => _statusText = 'Waiting for client to connect...');
+      setState(
+          () => _statusText = 'Waiting for client to connect...');
     }
     setState(() => _isLoading = false);
   }
 
   Future<void> _startAsClient() async {
     await _saveProfile();
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _role = 'client';
       _statusText = 'Scanning for host...';
     });
     final error = await _service.startAsClient();
+    if (!mounted) return;
     if (error != null) {
       setState(() {
         _role = 'none';
@@ -227,11 +286,13 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   }
 
   Future<void> _connectToPeer(BleDiscoveredDevice device) async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _statusText = 'Connecting to ${device.deviceName}...';
     });
     final error = await _service.connectToPeer(device);
+    if (!mounted) return;
     if (error != null) {
       _showError('Connection failed: $error');
       setState(() => _statusText = 'Scanning for host...');
@@ -242,7 +303,9 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
+    _lastSentTimestamp = DateTime.now().millisecondsSinceEpoch;
     await _service.sendMessage(text);
+    if (!mounted) return;
     setState(() => _messages.add({
           'content': text,
           'time': _timestamp(),
@@ -250,7 +313,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           'read': false,
           'isRelay': false,
           'senderName': _myProfile?.displayName ?? 'Me',
-          'senderColor': _myProfile?.avatarColorValue ?? 0xFF1B4F8A,
+          'senderColor':
+              _myProfile?.avatarColorValue ?? 0xFF1B4F8A,
         }));
     _messageController.clear();
   }
@@ -259,12 +323,16 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   void dispose() {
     _typingTimer?.cancel();
     _peerTypingTimer?.cancel();
+    _peersSubscription?.cancel();
+    _messageSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _messageController.dispose();
     _nameController.dispose();
     super.dispose();
   }
 
-  Widget _buildAvatar(String name, int colorValue, {double radius = 18}) {
+  Widget _buildAvatar(String name, int colorValue,
+      {double radius = 18}) {
     return CircleAvatar(
       radius: radius,
       backgroundColor: Color(colorValue),
@@ -305,8 +373,35 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                   ),
               ],
             ),
+            if (_lastLatencyMs != null) ...[
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${_lastLatencyMs}ms RTT',
+                  style: const TextStyle(
+                      fontSize: 11, color: Colors.white),
+                ),
+              ),
+            ],
           ],
         ),
+        actions: [
+          // Edit profile button
+          if (_profileExists && _role == 'none')
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () {
+                setState(() => _profileExists = false);
+              },
+              tooltip: 'Edit profile',
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -314,8 +409,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             width: double.infinity,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 14, vertical: 8),
             color: _isConnected
                 ? Colors.green[50]
                 : _role == 'none'
@@ -329,12 +424,14 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                     _peerProfile!.avatarColorValue,
                     radius: 14,
                   ),
-                if (_peerProfile != null) const SizedBox(width: 8),
+                if (_peerProfile != null)
+                  const SizedBox(width: 8),
                 if (_isLoading)
                   const SizedBox(
                     width: 14,
                     height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2),
                   ),
                 if (_isLoading) const SizedBox(width: 8),
                 Expanded(
@@ -345,15 +442,17 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                             ? '🟢 $_statusText'
                             : '🔵 $_statusText',
                     style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
             ),
           ),
 
-          // Profile setup + role selection
-          if (_role == 'none')
+          // Profile setup (shown only if no saved profile
+          // or user clicked edit)
+          if (_role == 'none' && !_profileExists)
             Expanded(
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(20),
@@ -362,7 +461,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                   children: [
                     const Text('Your Profile',
                         style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold)),
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold)),
                     const SizedBox(height: 16),
                     Row(
                       children: [
@@ -394,11 +494,13 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                     Row(
                       children: _colorOptions.map((color) {
                         return GestureDetector(
-                          onTap: () =>
-                              setState(() => _selectedColor = color),
+                          onTap: () => setState(
+                              () => _selectedColor = color),
                           child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            margin: const EdgeInsets.only(right: 10),
+                            duration:
+                                const Duration(milliseconds: 200),
+                            margin:
+                                const EdgeInsets.only(right: 10),
                             width: 32,
                             height: 32,
                             decoration: BoxDecoration(
@@ -406,7 +508,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                               shape: BoxShape.circle,
                               border: _selectedColor == color
                                   ? Border.all(
-                                      color: Colors.black87, width: 2.5)
+                                      color: Colors.black87,
+                                      width: 2.5)
                                   : null,
                               boxShadow: _selectedColor == color
                                   ? [
@@ -423,36 +526,93 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                       }).toList(),
                     ),
                     const SizedBox(height: 24),
-                    const Divider(),
-                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: () async {
+                        await _saveProfile();
+                      },
+                      style: ElevatedButton.styleFrom(
+                          minimumSize:
+                              const Size(double.infinity, 48)),
+                      child: const Text('Save Profile'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // Role selection + saved peers
+          // (shown when profile exists and not yet in a role)
+          if (_role == 'none' && _profileExists)
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Welcome back
+                    Row(
+                      children: [
+                        _buildAvatar(
+                          _myProfile!.displayName,
+                          _myProfile!.avatarColorValue,
+                          radius: 22,
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Hey, ${_myProfile!.displayName}!',
+                              style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                            const Text(
+                              'Ready to connect?',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
                     const Text(
                       'Make sure Bluetooth and Wi-Fi are ON',
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey),
                     ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed: _isLoading ? null : _startAsHost,
-                            icon: const Icon(Icons.router, size: 18),
+                            onPressed:
+                                _isLoading ? null : _startAsHost,
+                            icon: const Icon(Icons.router,
+                                size: 18),
                             label: const Text('Host'),
                             style: ElevatedButton.styleFrom(
-                                padding: const EdgeInsets.all(14)),
+                                padding:
+                                    const EdgeInsets.all(14)),
                           ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed:
-                                _isLoading ? null : _startAsClient,
+                            onPressed: _isLoading
+                                ? null
+                                : _startAsClient,
                             icon: const Icon(Icons.phone_android,
                                 size: 18),
                             label: const Text('Client'),
                             style: ElevatedButton.styleFrom(
                               padding: const EdgeInsets.all(14),
                               backgroundColor: Colors.white,
-                              foregroundColor: const Color(0xFF1B4F8A),
+                              foregroundColor:
+                                  const Color(0xFF1B4F8A),
                               side: const BorderSide(
                                   color: Color(0xFF1B4F8A)),
                             ),
@@ -460,6 +620,41 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                         ),
                       ],
                     ),
+
+                    // Recent peers
+                    if (_savedPeers.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      const Text(
+                        'Recent Peers',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      ..._savedPeers.map((peer) => Card(
+                            margin: const EdgeInsets.only(
+                                bottom: 8),
+                            child: ListTile(
+                              leading: _buildAvatar(
+                                peer.displayName,
+                                peer.avatarColorValue,
+                                radius: 20,
+                              ),
+                              title: Text(peer.displayName,
+                                  style: const TextStyle(
+                                      fontWeight:
+                                          FontWeight.w600)),
+                              subtitle: Text(
+                                'Last seen ${_formatLastSeen(peer.lastSeen)}',
+                                style: const TextStyle(
+                                    fontSize: 12),
+                              ),
+                              trailing: const Icon(
+                                  Icons.wifi_tethering,
+                                  color: Color(0xFF1B4F8A)),
+                            ),
+                          )),
+                    ],
                   ],
                 ),
               ),
@@ -471,12 +666,14 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
               child: _peers.isEmpty
                   ? const Center(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment:
+                            MainAxisAlignment.center,
                         children: [
                           CircularProgressIndicator(),
                           SizedBox(height: 16),
                           Text('Scanning for host via BLE...',
-                              style: TextStyle(color: Colors.grey)),
+                              style: TextStyle(
+                                  color: Colors.grey)),
                         ],
                       ),
                     )
@@ -487,22 +684,43 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                           const SizedBox(height: 8),
                       itemBuilder: (context, index) {
                         final peer = _peers[index];
+                        // Check if this peer is in saved peers
+                        final saved = _savedPeers
+                            .where((s) =>
+                                s.displayName == peer.deviceName)
+                            .firstOrNull;
                         return Card(
                           child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: const Color(0xFF1B4F8A),
-                              child: Text(
-                                peer.deviceName[0].toUpperCase(),
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold),
-                              ),
+                            leading: saved != null
+                                ? _buildAvatar(
+                                    saved.displayName,
+                                    saved.avatarColorValue,
+                                    radius: 20)
+                                : CircleAvatar(
+                                    backgroundColor:
+                                        const Color(0xFF1B4F8A),
+                                    child: Text(
+                                      peer.deviceName[0]
+                                          .toUpperCase(),
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight:
+                                              FontWeight.bold),
+                                    ),
+                                  ),
+                            title: Text(
+                              saved?.displayName ??
+                                  peer.deviceName,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600),
                             ),
-                            title: Text(peer.deviceName,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600)),
-                            subtitle: Text(peer.deviceAddress,
-                                style: const TextStyle(fontSize: 12)),
+                            subtitle: Text(
+                              saved != null
+                                  ? 'Last seen ${_formatLastSeen(saved.lastSeen)}'
+                                  : peer.deviceAddress,
+                              style:
+                                  const TextStyle(fontSize: 12),
+                            ),
                             trailing: ElevatedButton(
                               onPressed: _isLoading
                                   ? null
@@ -521,22 +739,26 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
               child: _messages.isEmpty
                   ? Center(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment:
+                            MainAxisAlignment.center,
                         children: [
                           Icon(Icons.chat_bubble_outline,
-                              size: 48, color: Colors.grey[300]),
+                              size: 48,
+                              color: Colors.grey[300]),
                           const SizedBox(height: 12),
                           Text(
                             _isConnected
                                 ? 'Say hello! 👋'
                                 : 'Waiting for connection...',
-                            style: TextStyle(color: Colors.grey[500]),
+                            style: TextStyle(
+                                color: Colors.grey[500]),
                           ),
                         ],
                       ),
                     )
                   : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      padding: const EdgeInsets.fromLTRB(
+                          12, 12, 12, 4),
                       itemCount: _messages.length,
                       itemBuilder: (context, index) {
                         final msg = _messages[index];
@@ -545,24 +767,27 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                         final time = msg['time'] as String;
                         final read = msg['read'] as bool;
                         final isRelay = msg['isRelay'] as bool;
-                        final senderName = msg['senderName'] as String;
-                        final senderColor = msg['senderColor'] as int;
+                        final senderName =
+                            msg['senderName'] as String;
+                        final senderColor =
+                            msg['senderColor'] as int;
 
                         return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
+                          padding:
+                              const EdgeInsets.only(bottom: 8),
                           child: Row(
                             mainAxisAlignment: isMine
                                 ? MainAxisAlignment.end
                                 : MainAxisAlignment.start,
-                            crossAxisAlignment: CrossAxisAlignment.end,
+                            crossAxisAlignment:
+                                CrossAxisAlignment.end,
                             children: [
-                              // Peer avatar on left
                               if (!isMine) ...[
-                                _buildAvatar(senderName, senderColor,
+                                _buildAvatar(
+                                    senderName, senderColor,
                                     radius: 14),
                                 const SizedBox(width: 6),
                               ],
-                              // Message bubble
                               Flexible(
                                 child: Column(
                                   crossAxisAlignment: isMine
@@ -571,53 +796,72 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                                   children: [
                                     if (!isMine)
                                       Padding(
-                                        padding: const EdgeInsets.only(
-                                            left: 4, bottom: 2),
+                                        padding:
+                                            const EdgeInsets.only(
+                                                left: 4,
+                                                bottom: 2),
                                         child: Text(
                                           senderName,
                                           style: TextStyle(
                                             fontSize: 11,
-                                            fontWeight: FontWeight.bold,
-                                            color: Color(senderColor),
+                                            fontWeight:
+                                                FontWeight.bold,
+                                            color: Color(
+                                                senderColor),
                                           ),
                                         ),
                                       ),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 14, vertical: 10),
+                                      padding: const EdgeInsets
+                                          .symmetric(
+                                          horizontal: 14,
+                                          vertical: 10),
                                       decoration: BoxDecoration(
                                         color: isRelay
                                             ? Colors.purple[50]
                                             : isMine
-                                                ? const Color(0xFF1B4F8A)
-                                                : Colors.grey[100],
-                                        borderRadius: BorderRadius.only(
-                                          topLeft:
-                                              const Radius.circular(16),
-                                          topRight:
-                                              const Radius.circular(16),
-                                          bottomLeft: Radius.circular(
-                                              isMine ? 16 : 4),
-                                          bottomRight: Radius.circular(
-                                              isMine ? 4 : 16),
+                                                ? const Color(
+                                                    0xFF1B4F8A)
+                                                : Colors
+                                                    .grey[100],
+                                        borderRadius:
+                                            BorderRadius.only(
+                                          topLeft: const Radius
+                                              .circular(16),
+                                          topRight: const Radius
+                                              .circular(16),
+                                          bottomLeft:
+                                              Radius.circular(
+                                                  isMine
+                                                      ? 16
+                                                      : 4),
+                                          bottomRight:
+                                              Radius.circular(
+                                                  isMine
+                                                      ? 4
+                                                      : 16),
                                         ),
                                         border: isRelay
                                             ? Border.all(
-                                                color: Colors.purple[200]!,
+                                                color: Colors
+                                                    .purple[200]!,
                                                 width: 1)
                                             : null,
                                       ),
                                       child: Column(
                                         crossAxisAlignment: isMine
-                                            ? CrossAxisAlignment.end
-                                            : CrossAxisAlignment.start,
+                                            ? CrossAxisAlignment
+                                                .end
+                                            : CrossAxisAlignment
+                                                .start,
                                         children: [
                                           if (isRelay)
                                             const Text(
                                               '📡 Relayed',
                                               style: TextStyle(
                                                   fontSize: 10,
-                                                  color: Colors.purple),
+                                                  color: Colors
+                                                      .purple),
                                             ),
                                           Text(
                                             content,
@@ -625,34 +869,45 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                                               color: isRelay
                                                   ? Colors.black87
                                                   : isMine
-                                                      ? Colors.white
-                                                      : Colors.black87,
+                                                      ? Colors
+                                                          .white
+                                                      : Colors
+                                                          .black87,
                                               fontSize: 15,
                                             ),
                                           ),
-                                          const SizedBox(height: 3),
+                                          const SizedBox(
+                                              height: 3),
                                           Row(
-                                            mainAxisSize: MainAxisSize.min,
+                                            mainAxisSize:
+                                                MainAxisSize.min,
                                             children: [
                                               Text(
                                                 time,
                                                 style: TextStyle(
                                                   fontSize: 10,
-                                                  color: isMine && !isRelay
-                                                      ? Colors.white60
-                                                      : Colors.black38,
+                                                  color: isMine &&
+                                                          !isRelay
+                                                      ? Colors
+                                                          .white60
+                                                      : Colors
+                                                          .black38,
                                                 ),
                                               ),
                                               if (isMine) ...[
-                                                const SizedBox(width: 4),
+                                                const SizedBox(
+                                                    width: 4),
                                                 Icon(
                                                   read
-                                                      ? Icons.done_all
+                                                      ? Icons
+                                                          .done_all
                                                       : Icons.done,
                                                   size: 13,
                                                   color: read
-                                                      ? Colors.lightBlueAccent
-                                                      : Colors.white60,
+                                                      ? Colors
+                                                          .lightBlueAccent
+                                                      : Colors
+                                                          .white60,
                                                 ),
                                               ],
                                             ],
@@ -663,7 +918,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                                   ],
                                 ),
                               ),
-                              // My avatar on right
                               if (isMine) ...[
                                 const SizedBox(width: 6),
                                 _buildAvatar(
@@ -683,7 +937,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           // Message input
           if (_isConnected)
             Container(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              padding:
+                  const EdgeInsets.fromLTRB(12, 8, 12, 12),
               decoration: BoxDecoration(
                 color: Colors.white,
                 boxShadow: [
@@ -704,8 +959,8 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
                         filled: true,
                         fillColor: Color(0xFFF5F5F5),
                         border: OutlineInputBorder(
-                          borderRadius:
-                              BorderRadius.all(Radius.circular(24)),
+                          borderRadius: BorderRadius.all(
+                              Radius.circular(24)),
                           borderSide: BorderSide.none,
                         ),
                         contentPadding: EdgeInsets.symmetric(

@@ -6,6 +6,7 @@ class StorageService {
   static const _boxName = 'campus_mesh_prefs';
   static const _profileKey = 'user_profile';
   static const _publicKeyKey = 'public_key';
+  static const _savedPeersKey = 'saved_peers';
 
   Box? _box;
 
@@ -19,7 +20,8 @@ class StorageService {
   // ── User Profile ──────────────────────────────────────────────
   Future<void> saveProfile(UserProfile profile) async {
     await _box?.put(_profileKey, profile.toJson());
-    debugPrint('StorageService: Profile saved — ${profile.displayName}');
+    debugPrint(
+        'StorageService: Profile saved — ${profile.displayName}');
   }
 
   UserProfile? getProfile() {
@@ -37,7 +39,31 @@ class StorageService {
 
   String? getPublicKey() => _box?.get(_publicKeyKey);
 
-  // ── Clear ─────────────────────────────────────────────────────
+  // ── Saved Peers ───────────────────────────────────────────────
+  Future<void> savePeer(SavedPeer peer) async {
+    final existing = getSavedPeers();
+    // Update if exists, add if new
+    final updated = [
+      peer,
+      ...existing.where((p) => p.displayName != peer.displayName),
+    ];
+    // Keep last 20 peers
+    final trimmed = updated.take(20).toList();
+    final jsonList =
+        trimmed.map((p) => p.toJson()).toList().join('||');
+    await _box?.put(_savedPeersKey, jsonList);
+    debugPrint('StorageService: Saved peer ${peer.displayName}');
+  }
+
+  List<SavedPeer> getSavedPeers() {
+    final raw = _box?.get(_savedPeersKey) as String?;
+    if (raw == null || raw.isEmpty) return [];
+    return raw
+        .split('||')
+        .map((json) => SavedPeer.fromJson(json))
+        .toList();
+  }
+
   Future<void> clearAll() async {
     await _box?.clear();
   }

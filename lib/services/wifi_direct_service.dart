@@ -14,7 +14,6 @@ class WifiDirectService {
   final _crypto = CryptoService();
   bool _cryptoReady = false;
 
-  // Relay: seen message IDs to prevent loops
   final Set<String> _seenMessageIds = {};
   static const int _defaultTTL = 3;
   String? _myDeviceId;
@@ -26,15 +25,17 @@ class WifiDirectService {
 
   final _peersController =
       StreamController<List<BleDiscoveredDevice>>.broadcast();
-  Stream<List<BleDiscoveredDevice>> get peersStream => _peersController.stream;
+  Stream<List<BleDiscoveredDevice>> get peersStream =>
+      _peersController.stream;
 
   final _connectionController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connectionController.stream;
 
-  // Relay map stream — emits hop paths for visualisation
-  final _relayController =
-      StreamController<List<String>>.broadcast();
+  final _relayController = StreamController<List<String>>.broadcast();
   Stream<List<String>> get relayStream => _relayController.stream;
+
+  final _latencyController = StreamController<int>.broadcast();
+  Stream<int> get latencyStream => _latencyController.stream;
 
   bool _isHost = false;
   bool get isHost => _isHost;
@@ -42,7 +43,10 @@ class WifiDirectService {
 
   String _generateId() {
     final rand = Random.secure();
-    return List.generate(8, (_) => rand.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+    return List.generate(
+      8,
+      (_) => rand.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
   }
 
   static Future<bool> isBluetoothOn() async {
@@ -173,15 +177,32 @@ class WifiDirectService {
         debugPrint('Client: Sent public key to host');
       }
     } else if (msg.startsWith('MESH:')) {
-      // Mesh relay message
       await _handleMeshMessage(msg.substring(5));
     } else if (msg.startsWith('ENC:')) {
       if (_cryptoReady) {
         try {
           final encrypted = msg.substring(4);
           final decrypted = await _crypto.decrypt(encrypted);
+
+          // Extract timestamp and calculate latency
+          String finalMessage = decrypted;
+          if (decrypted.startsWith('TIME:')) {
+            final parts = decrypted.substring(5).split('|');
+            if (parts.length >= 2) {
+              final sentTime = int.tryParse(parts[0]) ?? 0;
+              final latency =
+                  DateTime.now().millisecondsSinceEpoch - sentTime;
+              debugPrint(
+                  'Latency emitted: ${latency}ms — stream closed: ${_latencyController.isClosed}');
+              if (!_latencyController.isClosed) {
+                _latencyController.add(latency);
+              }
+              finalMessage = parts.sublist(1).join('|');
+            }
+          }
+
           if (!_messageController.isClosed) {
-            _messageController.add(decrypted);
+            _messageController.add(finalMessage);
           }
           await sendReadReceipt();
         } catch (e) {
@@ -208,31 +229,26 @@ class WifiDirectService {
     try {
       final meshMsg = MeshMessage.fromJson(meshJson);
 
-      // Drop if already seen — prevents loops
       if (_seenMessageIds.contains(meshMsg.id)) {
         debugPrint('Relay: Dropping duplicate message ${meshMsg.id}');
         return;
       }
       _seenMessageIds.add(meshMsg.id);
 
-      // Emit hop path for relay map
       if (!_relayController.isClosed) {
-        _relayController.add([...meshMsg.hopPath, _myDeviceId ?? 'unknown']);
+        _relayController
+            .add([...meshMsg.hopPath, _myDeviceId ?? 'unknown']);
       }
 
-      // Decrypt and deliver the payload
       if (_cryptoReady) {
         try {
           final decrypted = await _crypto.decrypt(meshMsg.payload);
           if (!_messageController.isClosed) {
             _messageController.add('📡 $decrypted');
           }
-        } catch (_) {
-          // Not for us or decryption failed — still relay
-        }
+        } catch (_) {}
       }
 
-      // Relay if TTL > 0
       if (meshMsg.ttl > 0) {
         final relayed = meshMsg.decrementTTL(_myDeviceId ?? 'unknown');
         final relayPayload = 'MESH:${relayed.toJson()}';
@@ -241,7 +257,8 @@ class WifiDirectService {
         } else {
           await _client?.broadcastText(relayPayload);
         }
-        debugPrint('Relay: Forwarded message ${meshMsg.id} with TTL ${relayed.ttl}');
+        debugPrint(
+            'Relay: Forwarded message ${meshMsg.id} with TTL ${relayed.ttl}');
       }
     } catch (e) {
       debugPrint('Relay: Error handling mesh message: $e');
@@ -265,7 +282,9 @@ class WifiDirectService {
   // ── SEND MESSAGE ──────────────────────────────────────────────
   Future<void> sendMessage(String message) async {
     if (_cryptoReady) {
-      final encrypted = await _crypto.encrypt(message);
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final withTime = 'TIME:$timestamp|$message';
+      final encrypted = await _crypto.encrypt(withTime);
       final payload = 'ENC:$encrypted';
       if (_isHost) {
         await _host?.broadcastText(payload);
@@ -281,7 +300,7 @@ class WifiDirectService {
     }
   }
 
-  // ── SEND MESH MESSAGE (with relay) ────────────────────────────
+  // ── SEND MESH MESSAGE ─────────────────────────────────────────
   Future<void> sendMeshMessage(String message) async {
     if (!_cryptoReady) return;
     final encrypted = await _crypto.encrypt(message);
@@ -344,6 +363,7 @@ class WifiDirectService {
     if (!_peersController.isClosed) _peersController.close();
     if (!_connectionController.isClosed) _connectionController.close();
     if (!_relayController.isClosed) _relayController.close();
+    if (!_latencyController.isClosed) _latencyController.close();
     _crypto.dispose();
     if (_initialized) {
       try { _host?.dispose(); } catch (_) {}
