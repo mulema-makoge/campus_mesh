@@ -126,7 +126,9 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
       if (message.startsWith('CHANNEL:') ||
           message.startsWith('BROADCAST:') ||
           message.startsWith('CHANNEL_JOIN:') ||
-          message.startsWith('📡MESH:')) return;
+          message.startsWith('📡MESH:')) {
+        return;
+      }
 
       if (message == 'PEER_DISCONNECTED:') {
         setState(() {
