@@ -1,11 +1,15 @@
 import 'dart:convert';
 
+enum MeshDeliveryStatus { pending, sent, delivered, read, rejected }
+
 class MeshMessage {
   final String id;
   final String payload;
   final int ttl;
   final List<String> hopPath;
   final String senderId;
+  final String? recipientDisplayName;
+  final MeshDeliveryStatus status;
 
   const MeshMessage({
     required this.id,
@@ -13,6 +17,8 @@ class MeshMessage {
     required this.ttl,
     required this.hopPath,
     required this.senderId,
+    this.recipientDisplayName,
+    this.status = MeshDeliveryStatus.pending,
   });
 
   MeshMessage decrementTTL(String myId) {
@@ -22,6 +28,20 @@ class MeshMessage {
       ttl: ttl - 1,
       hopPath: [...hopPath, myId],
       senderId: senderId,
+      recipientDisplayName: recipientDisplayName,
+      status: status,
+    );
+  }
+
+  MeshMessage copyWith({MeshDeliveryStatus? status}) {
+    return MeshMessage(
+      id: id,
+      payload: payload,
+      ttl: ttl,
+      hopPath: hopPath,
+      senderId: senderId,
+      recipientDisplayName: recipientDisplayName,
+      status: status ?? this.status,
     );
   }
 
@@ -32,6 +52,7 @@ class MeshMessage {
       'ttl': ttl,
       'hopPath': hopPath,
       'senderId': senderId,
+      'recipientDisplayName': recipientDisplayName,
     });
   }
 
@@ -43,6 +64,38 @@ class MeshMessage {
       ttl: map['ttl'],
       hopPath: List<String>.from(map['hopPath']),
       senderId: map['senderId'],
+      recipientDisplayName: map['recipientDisplayName'],
     );
   }
+}
+
+// Relay message with delivery tracking for UI
+class RelayConversation {
+  final String peerName;
+  final int peerColor;
+  final List<RelayMessageItem> messages;
+
+  const RelayConversation({
+    required this.peerName,
+    required this.peerColor,
+    required this.messages,
+  });
+}
+
+class RelayMessageItem {
+  final String id;
+  final String content;
+  final String time;
+  final int timestamp;
+  final bool isMine;
+  MeshDeliveryStatus status;
+
+  RelayMessageItem({
+    required this.id,
+    required this.content,
+    required this.time,
+    required this.timestamp,
+    required this.isMine,
+    this.status = MeshDeliveryStatus.pending,
+  });
 }

@@ -17,6 +17,13 @@ class WifiDirectService {
   final Set<String> _seenMessageIds = {};
   static const int _defaultTTL = 3;
   String? _myDeviceId;
+  String? _pendingPublicKey;
+
+  int? _lastSentMs;
+
+  final List<List<String>> _recentRelayPaths = [];
+  List<List<String>> get recentRelayPaths =>
+      List.unmodifiable(_recentRelayPaths);
 
   StreamSubscription<String>? _messageSubscription;
 
@@ -37,16 +44,58 @@ class WifiDirectService {
   final _latencyController = StreamController<int>.broadcast();
   Stream<int> get latencyStream => _latencyController.stream;
 
+  final _connectionRequestController =
+      StreamController<String>.broadcast();
+  Stream<String> get connectionRequestStream =>
+      _connectionRequestController.stream;
+
+  final _connectionRejectedController =
+      StreamController<void>.broadcast();
+  Stream<void> get connectionRejectedStream =>
+      _connectionRejectedController.stream;
+
+  // Mesh delivery events — emits meshId:status
+  final _meshDeliveryController =
+      StreamController<String>.broadcast();
+  Stream<String> get meshDeliveryStream =>
+      _meshDeliveryController.stream;
+
   bool _isHost = false;
   bool get isHost => _isHost;
   bool get cryptoReady => _cryptoReady;
+  String? get myDeviceId => _myDeviceId;
 
   String _generateId() {
     final rand = Random.secure();
     return List.generate(
-      8,
-      (_) => rand.nextInt(256).toRadixString(16).padLeft(2, '0'),
-    ).join();
+        8,
+        (_) =>
+            rand.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  }
+
+  void _emitRelayPath(List<String> path) {
+    _recentRelayPaths.add(path);
+    if (_recentRelayPaths.length > 50) _recentRelayPaths.removeAt(0);
+    if (!_relayController.isClosed) _relayController.add(path);
+  }
+
+  Future<bool> _waitForCrypto(
+      {int maxRetries = 20,
+      Duration interval = const Duration(milliseconds: 500)}) async {
+    int retries = 0;
+    while (!_cryptoReady && retries < maxRetries) {
+      await Future.delayed(interval);
+      retries++;
+    }
+    return _cryptoReady;
+  }
+
+  Future<void> _sendPlain(String message) async {
+    if (_isHost) {
+      await _host?.broadcastText(message);
+    } else {
+      await _client?.broadcastText(message);
+    }
   }
 
   static Future<bool> isBluetoothOn() async {
@@ -57,7 +106,7 @@ class WifiDirectService {
     return on;
   }
 
-  // ── HOST ──────────────────────────────────────────────────────
+  // ── START AS HOST (proximity mode — advertise + wait) ─────────
   Future<String?> startAsHost() async {
     try {
       _isHost = true;
@@ -83,7 +132,8 @@ class WifiDirectService {
       }
 
       await _crypto.generateKeyPair();
-      final ourPublicKey = await _crypto.getPublicKeyBase64();
+      _pendingPublicKey = await _crypto.getPublicKeyBase64();
+      final ourPublicKey = _pendingPublicKey!;
 
       _messageSubscription =
           _host!.streamReceivedTexts().listen((msg) async {
@@ -99,12 +149,6 @@ class WifiDirectService {
       _host!.streamClientList().listen((clients) async {
         if (clients.isNotEmpty && !_connectionController.isClosed) {
           _connectionController.add(true);
-          if (!_keyExchangeDone) {
-            _keyExchangeDone = true;
-            await Future.delayed(const Duration(milliseconds: 500));
-            await _host!.broadcastText('PK:$ourPublicKey');
-            debugPrint('Host: Sent public key to client');
-          }
         }
       });
 
@@ -115,7 +159,7 @@ class WifiDirectService {
     }
   }
 
-  // ── CLIENT ────────────────────────────────────────────────────
+  // ── START AS CLIENT (scan + connect to specific peer) ─────────
   Future<String?> startAsClient() async {
     try {
       _isHost = false;
@@ -167,14 +211,31 @@ class WifiDirectService {
   // ── Message Handler ───────────────────────────────────────────
   Future<void> _handleIncomingMessage(
       String msg, String ourPublicKey) async {
-    if (msg.startsWith('PK:') && !_cryptoReady) {
+    if (msg.startsWith('REQUEST:')) {
+      final requesterName = msg.substring(8);
+      if (!_connectionRequestController.isClosed) {
+        _connectionRequestController.add(requesterName);
+      }
+    } else if (msg == 'REJECT:') {
+      if (!_connectionRejectedController.isClosed) {
+        _connectionRejectedController.add(null);
+      }
+    } else if (msg == 'DISCONNECT:') {
+      if (!_messageController.isClosed) {
+        _messageController.add('PEER_DISCONNECTED:');
+      }
+    } else if (msg.startsWith('MESH_ACK:') ||
+        msg.startsWith('MESH_READ:') ||
+        msg.startsWith('MESH_REJECT:')) {
+      // Relay delivery acknowledgements back through mesh
+      await _handleMeshAck(msg);
+    } else if (msg.startsWith('PK:') && !_cryptoReady) {
       final peerPublicKey = msg.substring(3);
       await _crypto.deriveSharedSecret(peerPublicKey);
       _cryptoReady = true;
-      debugPrint('Crypto ready: shared secret derived');
+      debugPrint('Crypto ready');
       if (!_isHost) {
         await _client!.broadcastText('PK:$ourPublicKey');
-        debugPrint('Client: Sent public key to host');
       }
     } else if (msg.startsWith('MESH:')) {
       await _handleMeshMessage(msg.substring(5));
@@ -184,27 +245,20 @@ class WifiDirectService {
           final encrypted = msg.substring(4);
           final decrypted = await _crypto.decrypt(encrypted);
 
-          // Extract timestamp and calculate latency
           String finalMessage = decrypted;
           if (decrypted.startsWith('TIME:')) {
             final parts = decrypted.substring(5).split('|');
             if (parts.length >= 2) {
-              final sentTime = int.tryParse(parts[0]) ?? 0;
-              final latency =
-                  DateTime.now().millisecondsSinceEpoch - sentTime;
-              debugPrint(
-                  'Latency emitted: ${latency}ms — stream closed: ${_latencyController.isClosed}');
-              if (!_latencyController.isClosed) {
-                _latencyController.add(latency);
-              }
               finalMessage = parts.sublist(1).join('|');
             }
           }
 
+          _emitRelayPath(['peer', _myDeviceId ?? 'me']);
+
           if (!_messageController.isClosed) {
             _messageController.add(finalMessage);
           }
-          await sendReadReceipt();
+          await _sendReadReceiptDirect();
         } catch (e) {
           debugPrint('Decryption failed: $e');
         }
@@ -214,6 +268,12 @@ class WifiDirectService {
         _messageController.add('TYPING:');
       }
     } else if (msg == 'READ:') {
+      if (_lastSentMs != null) {
+        final rtt =
+            DateTime.now().millisecondsSinceEpoch - _lastSentMs!;
+        _lastSentMs = null;
+        if (!_latencyController.isClosed) _latencyController.add(rtt);
+      }
       if (!_messageController.isClosed) {
         _messageController.add('READ:');
       }
@@ -224,45 +284,88 @@ class WifiDirectService {
     }
   }
 
+  // ── Mesh ACK Handler ──────────────────────────────────────────
+  Future<void> _handleMeshAck(String msg) async {
+    // Format: MESH_ACK:<meshId>, MESH_READ:<meshId>, MESH_REJECT:<meshId>
+    if (!_meshDeliveryController.isClosed) {
+      _meshDeliveryController.add(msg);
+    }
+    // Relay the ACK back through the mesh if needed
+    // (same relay mechanism as regular mesh messages)
+    final parts = msg.split(':');
+    if (parts.length >= 2) {
+      final ackMeshId = '${parts[0]}:${parts[1]}';
+      if (!_seenMessageIds.contains('ack_$ackMeshId')) {
+        _seenMessageIds.add('ack_$ackMeshId');
+        await _sendPlain(msg);
+      }
+    }
+  }
+
   // ── Mesh Relay Handler ────────────────────────────────────────
   Future<void> _handleMeshMessage(String meshJson) async {
     try {
       final meshMsg = MeshMessage.fromJson(meshJson);
 
-      if (_seenMessageIds.contains(meshMsg.id)) {
-        debugPrint('Relay: Dropping duplicate message ${meshMsg.id}');
-        return;
-      }
+      if (_seenMessageIds.contains(meshMsg.id)) return;
       _seenMessageIds.add(meshMsg.id);
 
-      if (!_relayController.isClosed) {
-        _relayController
-            .add([...meshMsg.hopPath, _myDeviceId ?? 'unknown']);
-      }
+      final hopPath = [...meshMsg.hopPath, _myDeviceId ?? 'unknown'];
+      _emitRelayPath(hopPath);
 
       if (_cryptoReady) {
         try {
           final decrypted = await _crypto.decrypt(meshMsg.payload);
+          // Format: "senderName|senderColor|content"
           if (!_messageController.isClosed) {
-            _messageController.add('📡 $decrypted');
+            _messageController.add('📡MESH:${meshMsg.id}:$decrypted');
           }
-        } catch (_) {}
+          // Send delivery ACK back through mesh
+          await _sendMeshAck(meshMsg.id);
+        } catch (_) {
+          // Not for us — just relay
+        }
       }
 
       if (meshMsg.ttl > 0) {
         final relayed = meshMsg.decrementTTL(_myDeviceId ?? 'unknown');
-        final relayPayload = 'MESH:${relayed.toJson()}';
-        if (_isHost) {
-          await _host?.broadcastText(relayPayload);
-        } else {
-          await _client?.broadcastText(relayPayload);
-        }
-        debugPrint(
-            'Relay: Forwarded message ${meshMsg.id} with TTL ${relayed.ttl}');
+        await _sendPlain('MESH:${relayed.toJson()}');
       }
     } catch (e) {
-      debugPrint('Relay: Error handling mesh message: $e');
+      debugPrint('Relay error: $e');
     }
+  }
+
+  Future<void> _sendMeshAck(String meshId) async {
+    final ackMsg = 'MESH_ACK:$meshId';
+    if (!_seenMessageIds.contains('ack_$ackMsg')) {
+      _seenMessageIds.add('ack_$ackMsg');
+      await _sendPlain(ackMsg);
+    }
+  }
+
+  Future<void> sendMeshReadAck(String meshId) async {
+    await _sendPlain('MESH_READ:$meshId');
+  }
+
+  Future<void> sendMeshRejectAck(String meshId) async {
+    await _sendPlain('MESH_REJECT:$meshId');
+  }
+
+  // ── CONNECTION REQUEST ────────────────────────────────────────
+  Future<void> sendConnectionRequest(String displayName) async {
+    await _sendPlain('REQUEST:$displayName');
+  }
+
+  Future<void> acceptConnectionRequest() async {
+    if (_pendingPublicKey != null && !_keyExchangeDone) {
+      _keyExchangeDone = true;
+      await _sendPlain('PK:$_pendingPublicKey');
+    }
+  }
+
+  Future<void> rejectConnectionRequest() async {
+    await _sendPlain('REJECT:');
   }
 
   // ── CONNECT ───────────────────────────────────────────────────
@@ -281,38 +384,19 @@ class WifiDirectService {
 
   // ── SEND MESSAGE ──────────────────────────────────────────────
   Future<void> sendMessage(String message) async {
-    if (_cryptoReady) {
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final withTime = 'TIME:$timestamp|$message';
-      final encrypted = await _crypto.encrypt(withTime);
-      final payload = 'ENC:$encrypted';
-      if (_isHost) {
-        await _host?.broadcastText(payload);
-      } else {
-        await _client?.broadcastText(payload);
-      }
-    } else {
-      if (_isHost) {
-        await _host?.broadcastText(message);
-      } else {
-        await _client?.broadcastText(message);
-      }
+    if (!_cryptoReady) {
+      final ready = await _waitForCrypto();
+      if (!ready) return;
     }
-  }
 
-  // ── SEND MESH MESSAGE ─────────────────────────────────────────
-  Future<void> sendMeshMessage(String message) async {
-    if (!_cryptoReady) return;
-    final encrypted = await _crypto.encrypt(message);
-    final meshMsg = MeshMessage(
-      id: _generateId(),
-      payload: encrypted,
-      ttl: _defaultTTL,
-      hopPath: [_myDeviceId ?? 'unknown'],
-      senderId: _myDeviceId ?? 'unknown',
-    );
-    _seenMessageIds.add(meshMsg.id);
-    final payload = 'MESH:${meshMsg.toJson()}';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final withTime = 'TIME:$timestamp|$message';
+    final encrypted = await _crypto.encrypt(withTime);
+    final payload = 'ENC:$encrypted';
+
+    _lastSentMs = timestamp;
+    _emitRelayPath([_myDeviceId ?? 'me', 'peer']);
+
     if (_isHost) {
       await _host?.broadcastText(payload);
     } else {
@@ -320,41 +404,73 @@ class WifiDirectService {
     }
   }
 
-  // ── SEND CHANNEL MESSAGE ──────────────────────────────────────
-  Future<void> sendChannelMessage(String message,
-      {bool isBroadcast = false}) async {
-    final prefix = isBroadcast ? 'BROADCAST:' : 'CHANNEL:';
-    await sendMessage('$prefix$message');
+  // ── SEND MESH MESSAGE ─────────────────────────────────────────
+  Future<String?> sendMeshMessage(String message,
+      {String? recipientDisplayName}) async {
+    if (!_cryptoReady) {
+      final ready = await _waitForCrypto();
+      if (!ready) return null;
+    }
+    final encrypted = await _crypto.encrypt(message);
+    final id = _generateId();
+    final meshMsg = MeshMessage(
+      id: id,
+      payload: encrypted,
+      ttl: _defaultTTL,
+      hopPath: [_myDeviceId ?? 'unknown'],
+      senderId: _myDeviceId ?? 'unknown',
+      recipientDisplayName: recipientDisplayName,
+    );
+    _seenMessageIds.add(meshMsg.id);
+    await _sendPlain('MESH:${meshMsg.toJson()}');
+    return id; // Return ID for delivery tracking
   }
 
-  // ── TYPING INDICATOR ──────────────────────────────────────────
+  // ── SEND CHANNEL MESSAGE ──────────────────────────────────────
+  Future<void> sendChannelMessage(String message) async {
+    await sendMessage('BROADCAST:$message');
+  }
+
+  // ── TYPING ────────────────────────────────────────────────────
   Future<void> sendTypingIndicator() async {
     if (!_cryptoReady) return;
-    if (_isHost) {
-      await _host?.broadcastText('TYPING:');
-    } else {
-      await _client?.broadcastText('TYPING:');
-    }
+    await _sendPlain('TYPING:');
   }
 
   // ── READ RECEIPT ──────────────────────────────────────────────
+  Future<void> _sendReadReceiptDirect() async {
+    await _sendPlain('READ:');
+  }
+
   Future<void> sendReadReceipt() async {
-    if (!_cryptoReady) return;
-    if (_isHost) {
-      await _host?.broadcastText('READ:');
-    } else {
-      await _client?.broadcastText('READ:');
+    if (!_cryptoReady) {
+      final ready = await _waitForCrypto(maxRetries: 10);
+      if (!ready) return;
     }
+    await _sendReadReceiptDirect();
+  }
+
+  Future<void> sendDisconnectNotification() async {
+    await _sendPlain('DISCONNECT:');
   }
 
   Future<void> stopScan() async => await _client?.stopScan();
 
   Future<void> disconnect() async {
+    _messageSubscription?.cancel();
+    _messageSubscription = null;
+    _lastSentMs = null;
+    try { await _client?.stopScan(); } catch (_) {}
     try { await _host?.removeGroup(); } catch (_) {}
     try { await _client?.disconnect(); } catch (_) {}
+    _host = null;
+    _client = null;
+    _initialized = false;
     _cryptoReady = false;
     _keyExchangeDone = false;
+    _pendingPublicKey = null;
     _seenMessageIds.clear();
+    _crypto.clearSharedSecret();
   }
 
   void dispose() {
@@ -364,6 +480,15 @@ class WifiDirectService {
     if (!_connectionController.isClosed) _connectionController.close();
     if (!_relayController.isClosed) _relayController.close();
     if (!_latencyController.isClosed) _latencyController.close();
+    if (!_connectionRequestController.isClosed) {
+      _connectionRequestController.close();
+    }
+    if (!_connectionRejectedController.isClosed) {
+      _connectionRejectedController.close();
+    }
+    if (!_meshDeliveryController.isClosed) {
+      _meshDeliveryController.close();
+    }
     _crypto.dispose();
     if (_initialized) {
       try { _host?.dispose(); } catch (_) {}

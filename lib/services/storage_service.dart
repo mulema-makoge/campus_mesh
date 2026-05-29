@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/peer.dart';
@@ -7,21 +8,30 @@ class StorageService {
   static const _profileKey = 'user_profile';
   static const _publicKeyKey = 'public_key';
   static const _savedPeersKey = 'saved_peers';
+  static const _onboardingKey = 'onboarding_done';
+  static const _messagesPrefix = 'messages_';
+  static const _24h = 24 * 60 * 60 * 1000; // ms
 
   Box? _box;
 
-  // ── Initialise ────────────────────────────────────────────────
   Future<void> init() async {
     await Hive.initFlutter();
     _box = await Hive.openBox(_boxName);
     debugPrint('StorageService: Hive initialised');
   }
 
+  // ── Onboarding ────────────────────────────────────────────────
+  bool get onboardingDone =>
+      _box?.get(_onboardingKey, defaultValue: false) ?? false;
+
+  Future<void> setOnboardingDone() async {
+    await _box?.put(_onboardingKey, true);
+  }
+
   // ── User Profile ──────────────────────────────────────────────
   Future<void> saveProfile(UserProfile profile) async {
     await _box?.put(_profileKey, profile.toJson());
-    debugPrint(
-        'StorageService: Profile saved — ${profile.displayName}');
+    debugPrint('StorageService: Profile saved — ${profile.displayName}');
   }
 
   UserProfile? getProfile() {
@@ -42,33 +52,58 @@ class StorageService {
   // ── Saved Peers ───────────────────────────────────────────────
   Future<void> savePeer(SavedPeer peer) async {
     final existing = getSavedPeers();
-    // Update if exists, add if new
     final updated = [
       peer,
       ...existing.where((p) => p.displayName != peer.displayName),
     ];
-    // Keep last 20 peers
     final trimmed = updated.take(20).toList();
-    final jsonList =
-        trimmed.map((p) => p.toJson()).toList().join('||');
+    final jsonList = trimmed.map((p) => p.toJson()).join('||');
     await _box?.put(_savedPeersKey, jsonList);
-    debugPrint('StorageService: Saved peer ${peer.displayName}');
   }
 
   List<SavedPeer> getSavedPeers() {
     final raw = _box?.get(_savedPeersKey) as String?;
     if (raw == null || raw.isEmpty) return [];
-    return raw
-        .split('||')
-        .map((json) => SavedPeer.fromJson(json))
+    return raw.split('||').map((j) => SavedPeer.fromJson(j)).toList();
+  }
+
+  // ── Message History (24h) ─────────────────────────────────────
+  Future<void> saveMessages(
+      String peerName, List<Map<String, dynamic>> messages) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Keep last 100 messages within 24h
+    final filtered = messages
+        .where((m) {
+          final ts = m['timestamp'] as int? ?? now;
+          return (now - ts) < _24h;
+        })
         .toList();
+    final trimmed =
+        filtered.length > 100 ? filtered.sublist(filtered.length - 100) : filtered;
+    final key = '$_messagesPrefix${peerName.toLowerCase().replaceAll(' ', '_')}';
+    await _box?.put(key, jsonEncode(trimmed));
   }
 
-  Future<void> clearAll() async {
-    await _box?.clear();
+  List<Map<String, dynamic>> getMessages(String peerName) {
+    final key =
+        '$_messagesPrefix${peerName.toLowerCase().replaceAll(' ', '_')}';
+    final raw = _box?.get(key) as String?;
+    if (raw == null || raw.isEmpty) return [];
+    try {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final list = jsonDecode(raw) as List;
+      return list
+          .map((e) => Map<String, dynamic>.from(e))
+          .where((m) {
+            final ts = m['timestamp'] as int? ?? 0;
+            return (now - ts) < _24h;
+          })
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 
-  Future<void> dispose() async {
-    await _box?.close();
-  }
+  Future<void> clearAll() async => await _box?.clear();
+  Future<void> dispose() async => await _box?.close();
 }

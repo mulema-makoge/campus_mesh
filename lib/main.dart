@@ -8,12 +8,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
 
-  // Initialise local storage
   final storage = StorageService();
   await storage.init();
 
-  // Pass all uncaught Flutter errors to Crashlytics
-  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+  FlutterError.onError =
+      FirebaseCrashlytics.instance.recordFlutterFatalError;
 
   runApp(CampusMeshApp(storage: storage));
 }

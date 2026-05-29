@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'features/channels/channel_screen.dart';
-import 'features/discovery/peer_list_screen.dart';
 import 'features/discovery/wifi_direct_screen.dart';
+import 'features/onboarding/onboarding_screen.dart';
 import 'features/relay_map/relay_map_screen.dart';
 import 'services/storage_service.dart';
 import 'services/wifi_direct_service.dart';
@@ -68,8 +68,31 @@ class CampusMeshApp extends StatelessWidget {
           ),
         ),
       ),
-      home: MainScreen(storage: storage),
+      home: _RootRouter(storage: storage),
     );
+  }
+}
+
+class _RootRouter extends StatefulWidget {
+  final StorageService storage;
+  const _RootRouter({required this.storage});
+
+  @override
+  State<_RootRouter> createState() => _RootRouterState();
+}
+
+class _RootRouterState extends State<_RootRouter> {
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.storage.onboardingDone) {
+      return OnboardingScreen(
+        onDone: () async {
+          await widget.storage.setOnboardingDone();
+          if (mounted) setState(() {});
+        },
+      );
+    }
+    return MainScreen(storage: widget.storage);
   }
 }
 
@@ -94,12 +117,9 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // IndexedStack keeps all screens alive — prevents
-      // disconnection when switching tabs
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          const PeerListScreen(),
           WifiDirectScreen(
             storage: widget.storage,
             service: _wifiService,
@@ -117,24 +137,19 @@ class _MainScreenState extends State<MainScreen> {
             setState(() => _currentIndex = index),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.bluetooth_outlined),
-            selectedIcon: Icon(Icons.bluetooth),
-            label: 'BLE Peers',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.chat_bubble_outline),
-            selectedIcon: Icon(Icons.chat_bubble),
-            label: 'Direct Chat',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.group_outlined),
-            selectedIcon: Icon(Icons.group),
-            label: 'Channel',
+            icon: Icon(Icons.sensors_outlined),
+            selectedIcon: Icon(Icons.sensors),
+            label: 'Nearby',
           ),
           NavigationDestination(
             icon: Icon(Icons.alt_route_outlined),
             selectedIcon: Icon(Icons.alt_route),
-            label: 'Relay Map',
+            label: 'Mesh Relay',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.device_hub_outlined),
+            selectedIcon: Icon(Icons.device_hub),
+            label: 'Network',
           ),
         ],
       ),
