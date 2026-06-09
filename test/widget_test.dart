@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:campus_mesh/app.dart';
 import 'package:campus_mesh/services/crypto_service.dart';
-import 'package:campus_mesh/services/storage_service.dart';
 import 'package:campus_mesh/models/message.dart';
 import 'package:campus_mesh/models/peer.dart';
 

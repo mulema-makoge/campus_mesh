@@ -10,7 +10,7 @@ class StorageService {
   static const _savedPeersKey = 'saved_peers';
   static const _onboardingKey = 'onboarding_done';
   static const _messagesPrefix = 'messages_';
-  static const _24h = 24 * 60 * 60 * 1000; // ms
+  static const twentyFourHoursMs = 24 * 60 * 60 * 1000; // ms
 
   Box? _box;
 
@@ -75,7 +75,7 @@ class StorageService {
     final filtered = messages
         .where((m) {
           final ts = m['timestamp'] as int? ?? now;
-          return (now - ts) < _24h;
+          return (now - ts) < twentyFourHoursMs;
         })
         .toList();
     final trimmed =
@@ -96,7 +96,7 @@ class StorageService {
           .map((e) => Map<String, dynamic>.from(e))
           .where((m) {
             final ts = m['timestamp'] as int? ?? 0;
-            return (now - ts) < _24h;
+            return (now - ts) < twentyFourHoursMs;
           })
           .toList();
     } catch (_) {

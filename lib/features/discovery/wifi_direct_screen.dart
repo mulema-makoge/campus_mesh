@@ -45,8 +45,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
   UserProfile? _myProfile;
   UserProfile? _peerProfile;
   bool _profileExists = false;
-
-  bool _peerIsTyping = false;
   Timer? _typingTimer;
   Timer? _peerTypingTimer;
   Timer? _proximityRetryTimer;
@@ -165,10 +163,9 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
           setState(() => _messages.addAll(history));
         }
       } else if (message == 'TYPING:') {
-        setState(() => _peerIsTyping = true);
         _peerTypingTimer?.cancel();
         _peerTypingTimer = Timer(const Duration(seconds: 3), () {
-          if (mounted) setState(() => _peerIsTyping = false);
+          // Typing indicator timeout
         });
       } else if (message == 'READ:') {
         setState(() {
@@ -182,7 +179,6 @@ class _WifiDirectScreenState extends State<WifiDirectScreen> {
         });
         _saveHistory();
       } else {
-        setState(() => _peerIsTyping = false);
         final newMsg = {
           'content': message,
           'time': _timestamp(),
