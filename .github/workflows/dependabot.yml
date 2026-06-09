@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Flutter / Dart pub packages
+  - package-ecosystem: "pub"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "flutter"
+    ignore:
+      # Ignore the forked local plugin — managed manually
+      - dependency-name: "flutter_p2p_connection"
+
+  # GitHub Actions versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    labels:
+      - "dependencies"
+      - "ci"
